@@ -2,12 +2,17 @@
 // A Job is a process; each ProcessStep declares explicit typed inputs and
 // outputs so the output contract of one step feeds the input of the next.
 
+import type { IoSource, IoType } from "./io.js";
+
 export type StepStatus = "pending" | "running" | "succeeded" | "failed" | "skipped";
 export type RunStatus = "queued" | "running" | "succeeded" | "failed";
 
 export interface StepIO {
   key: string;
-  type: string;
+  type: IoType;
+  // Where the value is sourced from. On inputs: any IoSource. On outputs: only
+  // "step" (freshly produced) or "pass" (carried through unchanged).
+  source: IoSource;
   description: string;
 }
 

@@ -32,7 +32,7 @@ export function githubStepKinds(deps: GitHubKindDeps): StepKindRegistry {
 
 async function fetchIssue(deps: GitHubKindDeps, ctx: StepContext): Promise<StepValues> {
   const issue = await deps.client.getIssue(str(ctx.inputs, "repo"), num(ctx.inputs, "issueNumber"));
-  return { issueTitle: issue.title, issueBody: issue.body, userPrompt: buildPrompt(issue.title, issue.body) };
+  return { userPrompt: buildPrompt(issue.title, issue.body) };
 }
 
 // Renders the fetched issue into the user message the implement step prompts with.
@@ -50,16 +50,16 @@ async function cloneRepo(deps: GitHubKindDeps, ctx: StepContext): Promise<StepVa
 }
 
 async function createBranch(ctx: StepContext): Promise<StepValues> {
-  const branch = `strappy/issue-${num(ctx.inputs, "issueNumber")}`;
-  await git.createBranch(str(ctx.inputs, "workingDirectory"), branch);
-  return { branch };
+  const newBranch = `strappy/issue-${num(ctx.inputs, "issueNumber")}`;
+  await git.createBranch(str(ctx.inputs, "workingDirectory"), newBranch);
+  return { newBranch };
 }
 
 async function commitPush(deps: GitHubKindDeps, ctx: StepContext): Promise<StepValues> {
   const workingDirectory = str(ctx.inputs, "workingDirectory");
-  const branch = str(ctx.inputs, "branch");
+  const newBranch = str(ctx.inputs, "newBranch");
   await git.commitAll(workingDirectory, str(ctx.inputs, "commitMessage"), deps.committer);
-  await git.pushBranch(workingDirectory, branch, deps.token);
+  await git.pushBranch(workingDirectory, newBranch, deps.token);
   return { pushed: true };
 }
 
@@ -67,7 +67,7 @@ async function openPullRequest(deps: GitHubKindDeps, ctx: StepContext): Promise<
   const n = num(ctx.inputs, "issueNumber");
   const pr = await deps.client.openPullRequest({
     repo: str(ctx.inputs, "repo"),
-    head: str(ctx.inputs, "branch"),
+    head: str(ctx.inputs, "newBranch"),
     base: str(ctx.inputs, "baseBranch"),
     title: `Strappy: issue #${n}`,
     body: str(ctx.inputs, "pullRequestSummary"),

@@ -127,8 +127,8 @@ test("saveJob + getJob round-trips a new job with its IO contract", () => {
         kind: "noop",
         name: "Say",
         description: "Echo the input.",
-        inputs: [{ key: "in", type: "string", description: "text in" }],
-        outputs: [{ key: "out", type: "string", description: "text out" }],
+        inputs: [{ key: "in", type: "string", source: "trigger", description: "text in" }],
+        outputs: [{ key: "out", type: "string", source: "step", description: "text out" }],
       },
     ],
   };
@@ -151,8 +151,8 @@ test("saveJob + getJob round-trips a step's authored systemPrompt", () => {
         name: "Classify",
         description: "Classify the issue.",
         systemPrompt: "You are a triage bot. Categorise the issue.",
-        inputs: [{ key: "prompt", type: "string", description: "issue text" }],
-        outputs: [{ key: "answer", type: "string", description: "decision" }],
+        inputs: [{ key: "prompt", type: "string", source: "trigger", description: "issue text" }],
+        outputs: [{ key: "answer", type: "string", source: "step", description: "decision" }],
       },
     ],
   };

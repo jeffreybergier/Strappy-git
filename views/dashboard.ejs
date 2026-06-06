@@ -17,6 +17,13 @@
       .io-list { list-style: none; padding-left: 0; margin: 4px 0 8px; }
       .io-list li { font-family: monospace; font-size: 12px; }
       .io-type { color: #999; }
+      .io-src { font-family: sans-serif; font-size: 9px; text-transform: uppercase; letter-spacing: .5px; padding: 0 4px; border-radius: 3px; margin-left: 4px; vertical-align: middle; }
+      .io-src-trigger { background: #d9edf7; color: #31708f; }
+      .io-src-static { background: #fcf8e3; color: #8a6d3b; }
+      .io-src-pass { background: #f5f5f5; color: #999; border: 1px solid #e3e3e3; }
+      .io-src-receipt { background: #dff0d8; color: #3c763d; }
+      .trigger-card { flex: 0 1 200px; min-width: 180px; }
+      .trigger-card .panel-heading { background-color: #d9edf7; }
       .runs-table { table-layout: fixed; }
       .runs-table .col-status { width: 110px; }
       .runs-table .col-time { width: 90px; text-align: right; }
@@ -54,6 +61,21 @@
           </div>
           <div class="panel-body">
             <div class="step-flow">
+              <% if (job.triggerInputs && job.triggerInputs.length) { %>
+                <div class="panel panel-info step-card trigger-card">
+                  <div class="panel-heading"><strong>Trigger</strong></div>
+                  <div class="panel-body">
+                    <p class="small"><code><%= job.trigger %></code></p>
+                    <div class="io-label">Outputs</div>
+                    <ul class="io-list">
+                      <% job.triggerInputs.forEach(function (io) { %>
+                        <li><%= io.key %> <span class="io-type">:<%= io.type %></span></li>
+                      <% }); %>
+                    </ul>
+                  </div>
+                </div>
+                <div class="step-arrow">&rarr;</div>
+              <% } %>
               <% job.steps.forEach(function (step, i) { %>
                 <% if (i > 0) { %><div class="step-arrow">&rarr;</div><% } %>
                 <div class="panel panel-default step-card">
@@ -63,13 +85,13 @@
                     <div class="io-label">Inputs</div>
                     <ul class="io-list">
                       <% step.inputs.forEach(function (io) { %>
-                        <li><%= io.key %> <span class="io-type">:<%= io.type %></span></li>
+                        <li><%= io.key %> <span class="io-type">:<%= io.type %></span><% if (io.source && io.source !== "step") { %> <span class="io-src io-src-<%= io.source %>"><%= io.source %></span><% } %></li>
                       <% }); %>
                     </ul>
                     <div class="io-label">Outputs</div>
                     <ul class="io-list">
                       <% step.outputs.forEach(function (io) { %>
-                        <li><%= io.key %> <span class="io-type">:<%= io.type %></span></li>
+                        <li><%= io.key %> <span class="io-type">:<%= io.type %></span><% if (io.source && io.source !== "step") { %> <span class="io-src io-src-<%= io.source %>"><%= io.source %></span><% } %></li>
                       <% }); %>
                     </ul>
                   </div>

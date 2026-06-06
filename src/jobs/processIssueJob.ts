@@ -1,8 +1,24 @@
 import type { Job, ProcessStep, StepIO } from "./types.js";
+import type { IoSource, IoType } from "./io.js";
 import { loadPrompt } from "./prompts.js";
+import { validateJobGraph } from "./validateJobGraph.js";
 
-function io(key: string, type: string, description: string): StepIO {
-  return { key, type, description };
+function io(key: string, type: IoType, source: IoSource, description: string): StepIO {
+  return { key, type, source, description };
+}
+
+// The values the poller seeds onto the run for a github.issue.opened trigger
+// (see IssuePoller.runItem). Declared as a typed, ambient contract (every step
+// may read these without threading them) so validateJobGraph can prove the
+// steps' "trigger" inputs resolve. issueAuthor is gated at the poller
+// (isAllowedAuthor) and seeded here for traceability, though no step reads it.
+export function issueTriggerInputs(): StepIO[] {
+  return [
+    io("repo", "string", "trigger", "owner/name"),
+    io("issueNumber", "number", "trigger", "Issue number"),
+    io("issueAuthor", "string", "trigger", "GitHub login that opened the issue"),
+    io("jobUuid", "string", "trigger", "Per-job UUID"),
+  ];
 }
 
 function step(
@@ -14,11 +30,13 @@ function step(
 
 // Implementation flow: fetch the issue, clone the repo, branch, run the LLM
 // implementation step (it edits the clone and returns a commit message + PR
-// summary alongside the triage fields), then commit/push the changes, open a PR
-// from the model's summary, comment the PR number back, and close the issue.
-// Each step's outputs feed the next's inputs.
+// summary), then commit/push, open a PR from the model's summary, comment the PR
+// number back, and close the issue. Each step reads only ambient trigger
+// constants, its own static prompt, or the immediately preceding step's outputs;
+// a value needed by a later step is carried forward as a "pass" input+output so
+// the data flow is explicit and strictly enforced (validateJobGraph + scheduler).
 export function processIssueJob(): Job {
-  return {
+  const job: Job = {
     id: "process-issue",
     name: "Process New Issue",
     description: "Implement a whitelisted user's new issue with the LLM and open a PR with the changes.",
@@ -26,46 +44,66 @@ export function processIssueJob(): Job {
     steps: [
       step("fetch-issue", "github.fetchIssue", "Fetch Issue",
         "Read the issue title and body and render the implementation user message.",
-        [io("repo", "string", "owner/name"), io("issueNumber", "number", "Issue number")],
-        [io("issueTitle", "string", "Issue title"), io("issueBody", "string", "Issue body"),
-          io("userPrompt", "string", "Issue rendered as the implementation user message")]),
+        [io("repo", "string", "trigger", "owner/name"), io("issueNumber", "number", "trigger", "Issue number")],
+        [io("userPrompt", "string", "step", "Issue rendered as the implementation user message")]),
       step("clone-repo", "git.cloneRepo", "Clone Repo",
         "Clone into <tempDir>/jobs/<uuid>/<reponame> so the model can explore it.",
-        [io("repo", "string", "owner/name"), io("jobUuid", "string", "Per-job UUID")],
-        [io("workingDirectory", "string", "Local clone path"), io("baseBranch", "string", "Default branch")]),
+        [io("repo", "string", "trigger", "owner/name"), io("jobUuid", "string", "trigger", "Per-job UUID"),
+          io("userPrompt", "string", "pass", "Carried to the implement step")],
+        [io("workingDirectory", "string", "step", "Local clone path"), io("baseBranch", "string", "step", "Default branch"),
+          io("userPrompt", "string", "pass", "Carried to the implement step")]),
       step("create-branch", "git.createBranch", "Create Branch",
         "Create branch strappy/issue-<n> before the model edits.",
-        [io("workingDirectory", "string", "Local clone path"), io("issueNumber", "number", "Issue number")],
-        [io("branch", "string", "New branch name")]),
+        [io("workingDirectory", "string", "pass", "Local clone path"), io("issueNumber", "number", "trigger", "Issue number"),
+          io("userPrompt", "string", "pass", "Carried to the implement step"),
+          io("baseBranch", "string", "pass", "Carried to the open-PR step")],
+        [io("newBranch", "string", "step", "New branch name"),
+          io("workingDirectory", "string", "pass", "Local clone path"),
+          io("userPrompt", "string", "pass", "Carried to the implement step"),
+          io("baseBranch", "string", "pass", "Carried to the open-PR step")]),
       step("implement-issue", "llm", "Implement Issue",
         "Explore the cloned repo, make the changes, and report a commit message + PR summary.",
-        [io("systemPrompt", "string", "Static instructions (loaded from prompts/implement-issue.md)"),
-          io("userPrompt", "string", "Issue rendered as the user message"),
-          io("workingDirectory", "string", "Local clone path the model explores and edits")],
-        [io("commitMessage", "string", "Git commit message for the changes the model made"),
-          io("pullRequestSummary", "string", "Markdown summary of the changes, used as the PR body"),
-          io("cost", "number", "LLM spend for this step, reported by Pi")],
+        [io("systemPrompt", "string", "static", "Static instructions (loaded from prompts/implement-issue.md)"),
+          io("userPrompt", "string", "step", "Issue rendered as the user message"),
+          io("workingDirectory", "string", "pass", "Local clone path the model explores and edits"),
+          io("baseBranch", "string", "pass", "Carried to the open-PR step"),
+          io("newBranch", "string", "pass", "Carried to the commit/push + open-PR steps")],
+        [io("commitMessage", "string", "step", "Git commit message for the changes the model made"),
+          io("pullRequestSummary", "string", "step", "Markdown summary of the changes, used as the PR body"),
+          io("cost", "number", "step", "LLM spend for this step, reported by Pi"),
+          io("workingDirectory", "string", "pass", "Local clone path"),
+          io("baseBranch", "string", "pass", "Carried to the open-PR step"),
+          io("newBranch", "string", "pass", "Carried to the commit/push + open-PR steps")],
         loadPrompt("implement-issue")),
       step("commit-push", "git.commitPush", "Commit & Push",
         "Commit the model's changes with its commit message and push the branch.",
-        [io("workingDirectory", "string", "Local clone path"), io("branch", "string", "Branch to push"),
-          io("commitMessage", "string", "Commit message from the implement step")],
-        [io("pushed", "boolean", "Whether the branch was pushed")]),
+        [io("workingDirectory", "string", "step", "Local clone path"),
+          io("newBranch", "string", "pass", "Branch to push, carried to the open-PR step"),
+          io("commitMessage", "string", "step", "Commit message from the implement step"),
+          io("baseBranch", "string", "pass", "Carried to the open-PR step"),
+          io("pullRequestSummary", "string", "pass", "Carried to the open-PR step")],
+        [io("pushed", "boolean", "receipt", "Terminal: the branch was pushed"),
+          io("newBranch", "string", "pass", "Carried to the open-PR step"),
+          io("baseBranch", "string", "pass", "Carried to the open-PR step"),
+          io("pullRequestSummary", "string", "pass", "Carried to the open-PR step")]),
       step("open-pr", "github.openPullRequest", "Open Pull Request",
         "Open a PR from the branch into the default branch using the model's summary as the body.",
-        [io("repo", "string", "owner/name"), io("branch", "string", "Head branch"),
-          io("baseBranch", "string", "Base branch"), io("issueNumber", "number", "Issue number"),
-          io("pullRequestSummary", "string", "PR body from the implement step")],
-        [io("prNumber", "number", "Created PR number"), io("prUrl", "string", "PR URL")]),
+        [io("repo", "string", "trigger", "owner/name"), io("issueNumber", "number", "trigger", "Issue number"),
+          io("newBranch", "string", "step", "Head branch"), io("baseBranch", "string", "step", "Base branch"),
+          io("pullRequestSummary", "string", "step", "PR body from the implement step")],
+        [io("prNumber", "number", "step", "Created PR number"), io("prUrl", "string", "step", "PR URL")]),
       step("comment-issue", "github.commentIssue", "Comment PR Number",
         "Comment the PR number back on the issue.",
-        [io("repo", "string", "owner/name"), io("issueNumber", "number", "Issue number"),
-          io("prNumber", "number", "PR number")],
-        [io("commentId", "number", "Created comment id")]),
+        [io("repo", "string", "trigger", "owner/name"), io("issueNumber", "number", "trigger", "Issue number"),
+          io("prNumber", "number", "step", "PR number")],
+        [io("commentId", "number", "receipt", "Terminal: the PR-number comment was created")]),
       step("close-issue", "github.closeIssue", "Close Issue",
         "Close the issue now that the PR is open.",
-        [io("repo", "string", "owner/name"), io("issueNumber", "number", "Issue number")],
-        [io("closed", "boolean", "Whether the issue was closed")]),
+        [io("repo", "string", "trigger", "owner/name"), io("issueNumber", "number", "trigger", "Issue number")],
+        [io("closed", "boolean", "receipt", "Terminal: the issue was closed")]),
     ],
   };
+  // Strict init: refuse to hand back a job whose step contract doesn't hold.
+  validateJobGraph(job, issueTriggerInputs());
+  return job;
 }

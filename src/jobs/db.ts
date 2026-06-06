@@ -3,6 +3,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createLogger } from "../logger.js";
 import { applySchema, SCHEMA_VERSION } from "./schema.js";
+import { asIoSource, asIoType } from "./io.js";
 import type {
   Job,
   JobRun,
@@ -38,16 +39,16 @@ export function openDatabase(dbPath: string): DatabaseSync {
 }
 
 // Self-heals a stale on-disk schema so a fossil DB reseeds instead of crashing.
-// Pre-versioning files left user_version = 0 with our tables already created;
-// their shape predates current columns (e.g. system_prompt), so a read throws
-// "no such column". We drop those tables, applySchema() recreates the current
-// shape, and the now-empty DB re-seeds. Dropping is safe: the data dir is
-// disposable (the documented "delete the file to regenerate" recovery).
+// Any user_version other than the current one (a pre-versioning 0, or an older
+// numbered schema whose columns predate the current shape) has its tables
+// dropped; applySchema() recreates the current shape and the now-empty DB
+// re-seeds. Dropping is safe: the data dir is disposable (the documented "delete
+// the file to regenerate" recovery), so local runs/ledger regenerate too.
 function migrateSchema(db: DatabaseSync): void {
   const version = userVersion(db);
   if (version === SCHEMA_VERSION) return;
-  if (version === 0 && hasTable(db, "jobs")) {
-    log.warn("migrateSchema", `legacy schema (user_version 0) found; rebuilding disposable db`);
+  if (hasTable(db, "jobs")) {
+    log.warn("migrateSchema", `schema v${version} != v${SCHEMA_VERSION}; rebuilding disposable db`);
     dropAllTables(db);
   }
   db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`);
@@ -125,10 +126,15 @@ function hydrateStep(db: DatabaseSync, jobId: string, row: Row): ProcessStep {
 function readIO(db: DatabaseSync, jobId: string, stepId: string, direction: IODirection): StepIO[] {
   return db
     .prepare(
-      "SELECT key, type, description FROM step_io WHERE job_id = ? AND step_id = ? AND direction = ? ORDER BY position",
+      "SELECT key, type, source, description FROM step_io WHERE job_id = ? AND step_id = ? AND direction = ? ORDER BY position",
     )
     .all(jobId, stepId, direction)
-    .map((r) => ({ key: text(r, "key"), type: text(r, "type"), description: text(r, "description") }));
+    .map((r) => ({
+      key: text(r, "key"),
+      type: asIoType(text(r, "type")),
+      source: asIoSource(text(r, "source")),
+      description: text(r, "description"),
+    }));
 }
 
 function hydrateRun(db: DatabaseSync, row: Row): JobRun {
@@ -259,8 +265,8 @@ function insertStep(db: DatabaseSync, jobId: string, step: ProcessStep, position
 
 function insertIO(db: DatabaseSync, jobId: string, stepId: string, direction: IODirection, io: StepIO, position: number): void {
   db.prepare(
-    "INSERT INTO step_io (job_id, step_id, direction, position, key, type, description) VALUES (?, ?, ?, ?, ?, ?, ?)",
-  ).run(jobId, stepId, direction, position, io.key, io.type, io.description);
+    "INSERT INTO step_io (job_id, step_id, direction, position, key, type, source, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run(jobId, stepId, direction, position, io.key, io.type, io.source, io.description);
 }
 
 export function insertRun(db: DatabaseSync, run: JobRun): void {

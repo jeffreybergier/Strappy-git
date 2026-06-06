@@ -21,7 +21,7 @@ function job(steps: string[], name = "J"): Job {
       name: id,
       description: "",
       inputs: [],
-      outputs: [{ key: "out", type: "string", description: "" }],
+      outputs: [{ key: "out", type: "string", source: "step", description: "" }],
     })),
   };
 }

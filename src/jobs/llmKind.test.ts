@@ -26,8 +26,13 @@ function step(outputs: string[]): ProcessStep {
     kind: "llm",
     name: "Ask",
     description: "",
-    inputs: [{ key: "userPrompt", type: "string", description: "" }],
-    outputs: outputs.map((key) => ({ key, type: key === "cost" ? "number" : "string", description: "" })),
+    inputs: [{ key: "userPrompt", type: "string", source: "step", description: "" }],
+    outputs: outputs.map((key) => ({
+      key,
+      type: key === "cost" ? "number" : "string",
+      source: "step",
+      description: "",
+    })),
   };
 }
 
@@ -100,8 +105,8 @@ test("llmStepKind sanitizes the step id into an identifier-safe tool name", asyn
     kind: "llm",
     name: "T",
     description: "",
-    inputs: [{ key: "userPrompt", type: "string", description: "" }],
-    outputs: [{ key: "out", type: "string", description: "" }],
+    inputs: [{ key: "userPrompt", type: "string", source: "step", description: "" }],
+    outputs: [{ key: "out", type: "string", source: "step", description: "" }],
   };
   await kind({ step: dashed, inputs: { userPrompt: "hi", workingDirectory: "/tmp/r" } });
   assert.equal(seenTool, "submit_implement_issue");

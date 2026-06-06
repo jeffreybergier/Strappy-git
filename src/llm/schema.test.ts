@@ -3,9 +3,12 @@ import assert from "node:assert/strict";
 import { outputsToSchema } from "./schema.js";
 import type { TObject } from "typebox";
 import type { StepIO } from "../jobs/types.js";
+import type { IoType } from "../jobs/io.js";
 
+// `type` stays a string here so the fallback test can pass an out-of-vocabulary
+// value; the cast mimics the one defensive path (a cast at a call site).
 function io(key: string, type: string): StepIO {
-  return { key, type, description: `desc for ${key}` };
+  return { key, type: type as IoType, source: "step", description: `desc for ${key}` };
 }
 
 // typebox property values are the abstract TSchema; read their JSON-schema

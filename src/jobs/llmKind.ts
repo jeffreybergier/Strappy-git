@@ -41,10 +41,11 @@ export function llmStepKind(run: RunStructured = runStructured): StepExecutor {
   };
 }
 
-// The model fills every output except the harness-derived ones, so those are
+// The model fills only the outputs it authors: harness-derived outputs (filled
+// from the execution) and "pass" outputs (carried through by the scheduler) are
 // excluded from the submit tool's schema.
 function modelOutputs(outputs: StepIO[]): StepIO[] {
-  return outputs.filter((io) => !(io.key in DERIVED_OUTPUTS));
+  return outputs.filter((io) => io.source !== "pass" && !(io.key in DERIVED_OUTPUTS));
 }
 
 function derivedOutputs(outputs: StepIO[], execution: LlmExecution): StepValues {

@@ -25,8 +25,8 @@ function step(id: string, kind: string, inputs: string[], outputs: string[]): Pr
     kind,
     name: id,
     description: "",
-    inputs: inputs.map((key) => ({ key, type: "string", description: "" })),
-    outputs: outputs.map((key) => ({ key, type: "string", description: "" })),
+    inputs: inputs.map((key) => ({ key, type: "string", source: "step", description: "" })),
+    outputs: outputs.map((key) => ({ key, type: "string", source: "step", description: "" })),
   };
 }
 
@@ -48,6 +48,48 @@ test("runJob threads one step's outputs into the next step's inputs", async () =
   assert.deepEqual(seen, { token: "abc" });
 });
 
+test("a pass output is auto-filled from its input without the executor emitting it", async () => {
+  const seen: StepValues = {};
+  const registry = new StepKindRegistry()
+    .register("produce", () => ({ token: "abc" }))
+    .register("carry", () => ({})) // emits nothing; token is carried by the scheduler
+    .register("consume", (ctx) => { Object.assign(seen, ctx.inputs); return {}; });
+  const carry: ProcessStep = {
+    id: "b", kind: "carry", name: "b", description: "",
+    inputs: [{ key: "token", type: "string", source: "pass", description: "" }],
+    outputs: [{ key: "token", type: "string", source: "pass", description: "" }],
+  };
+  const chain = job("chain", [step("a", "produce", [], ["token"]), carry, step("c", "consume", ["token"], [])]);
+  const run = await runJob(chain, {}, { registry });
+  assert.equal(run.status, "succeeded");
+  assert.deepEqual(seen, { token: "abc" });
+});
+
+test("a value the previous step did not output is invisible to a later step (runtime adjacency)", async () => {
+  const registry = new StepKindRegistry()
+    .register("produce", () => ({ token: "abc" }))
+    .register("noop", () => ({}));
+  const chain = job("chain", [step("a", "produce", [], ["token"]), step("b", "noop", [], []), step("c", "noop", ["token"], [])]);
+  const run = await runJob(chain, {}, { registry });
+  assert.equal(run.status, "failed");
+  assert.match(run.stepRuns[2]?.note ?? "", /missing input "token"/);
+});
+
+test("an ambient trigger constant is readable at any step, not just the first", async () => {
+  const seen: StepValues = {};
+  const registry = new StepKindRegistry()
+    .register("noop", () => ({}))
+    .register("read", (ctx) => { Object.assign(seen, ctx.inputs); return {}; });
+  const reader: ProcessStep = {
+    id: "b", kind: "read", name: "b", description: "",
+    inputs: [{ key: "repo", type: "string", source: "trigger", description: "" }],
+    outputs: [],
+  };
+  const run = await runJob(job("j", [step("a", "noop", [], []), reader]), { repo: "o/r" }, { registry });
+  assert.equal(run.status, "succeeded");
+  assert.deepEqual(seen, { repo: "o/r" });
+});
+
 test("a declared systemPrompt input is sourced from the step's own systemPrompt, not the bus", async () => {
   const seen: StepValues = {};
   const registry = new StepKindRegistry().register("llm", (ctx) => {
@@ -60,8 +102,8 @@ test("a declared systemPrompt input is sourced from the step's own systemPrompt,
     name: "Ask",
     description: "",
     systemPrompt: "be terse",
-    inputs: [{ key: "systemPrompt", type: "string", description: "" }],
-    outputs: [{ key: "out", type: "string", description: "" }],
+    inputs: [{ key: "systemPrompt", type: "string", source: "static", description: "" }],
+    outputs: [{ key: "out", type: "string", source: "step", description: "" }],
   };
   const run = await runJob(job("j", [llm]), {}, { registry });
   assert.equal(run.status, "succeeded");
@@ -135,6 +177,17 @@ test("a step that omits a declared output fails the contract", async () => {
   const run = await runJob(job("j", [step("s1", "forgetful", [], ["promised"])]), {}, { registry });
   assert.equal(run.status, "failed");
   assert.match(run.stepRuns[0]?.note ?? "", /did not produce output "promised"/);
+});
+
+test("a step whose output value mismatches its declared type fails the contract", async () => {
+  const registry = new StepKindRegistry().register("wrongType", () => ({ count: "not a number" }));
+  const numberOut: ProcessStep = {
+    id: "s1", kind: "wrongType", name: "s1", description: "",
+    inputs: [], outputs: [{ key: "count", type: "number", source: "step", description: "" }],
+  };
+  const run = await runJob(job("j", [numberOut]), {}, { registry });
+  assert.equal(run.status, "failed");
+  assert.match(run.stepRuns[0]?.note ?? "", /output "count" expected number, got string/);
 });
 
 test("the registry rejects duplicate registration and unknown kinds", () => {

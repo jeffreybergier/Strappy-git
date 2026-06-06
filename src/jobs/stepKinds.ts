@@ -1,5 +1,5 @@
 import { createLogger } from "../logger.js";
-import type { LlmExecution, ProcessStep } from "./types.js";
+import type { LlmExecution, ProcessStep, StepIO } from "./types.js";
 
 const log = createLogger("StepKinds");
 
@@ -52,13 +52,26 @@ export class StepKindRegistry {
   }
 }
 
-// Placeholder executor: emits a deterministic value for each declared output so
-// a job runs end-to-end before real handlers exist. Each registered kind below
-// is a seam to replace with a real GitHub/LLM executor.
+// Placeholder executor: emits a deterministic, type-correct value for each
+// freshly-produced output so a job runs end-to-end (and passes the scheduler's
+// output type check) before real handlers exist. "pass" outputs are skipped —
+// the scheduler auto-fills those from the matching input. Each registered kind
+// below is a seam to replace with a real GitHub/LLM executor.
 export function stubExecutor(ctx: StepContext): StepValues {
   const outputs: StepValues = {};
-  for (const io of ctx.step.outputs) outputs[io.key] = `<${ctx.step.id}.${io.key}>`;
+  for (const io of ctx.step.outputs) {
+    if (io.source !== "pass") outputs[io.key] = stubValue(ctx.step.id, io);
+  }
   return outputs;
+}
+
+function stubValue(stepId: string, io: StepIO): unknown {
+  switch (io.type) {
+    case "number":
+    case "integer": return 1;
+    case "boolean": return true;
+    case "string": return `<${stepId}.${io.key}>`;
+  }
 }
 
 // The kinds the seeded jobs reference today, all stubbed for now. "llm" is
