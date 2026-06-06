@@ -17,6 +17,22 @@ export interface GitHubKindDeps {
 // (threaded by the scheduler); outputs feed the next step. The PR-flow kinds
 // (createBranch/commitPush/...) stay registered for the follow-up even though the
 // implement-only job does not reference them yet.
+// The per-run workspace: <tempDir>/jobs/<jobUuid>. The clone lands under here and
+// the whole dir is removed on teardown, so one run can never touch another's
+// files. Single source of the path so clone and cleanup can't drift.
+export function jobWorkspace(tempDir: string, jobUuid: string): string {
+  if (typeof tempDir !== "string" || tempDir === "") throw new Error("[githubKinds.jobWorkspace] tempDir is required");
+  if (typeof jobUuid !== "string" || jobUuid === "") throw new Error("[githubKinds.jobWorkspace] jobUuid is required");
+  return path.join(tempDir, "jobs", jobUuid);
+}
+
+// Scheduler teardown hook: remove the run's clone workspace, keyed off the
+// ambient jobUuid trigger constant. Fires on success and failure.
+export function githubCleanup(deps: GitHubKindDeps): (trigger: StepValues) => Promise<void> {
+  validateDeps(deps);
+  return (trigger) => git.removeDir(jobWorkspace(deps.tempDir, str(trigger, "jobUuid")));
+}
+
 export function githubStepKinds(deps: GitHubKindDeps): StepKindRegistry {
   validateDeps(deps);
   return new StepKindRegistry()
@@ -43,7 +59,7 @@ function buildPrompt(title: string, body: string): string {
 
 async function cloneRepo(deps: GitHubKindDeps, ctx: StepContext): Promise<StepValues> {
   const repo = str(ctx.inputs, "repo");
-  const baseDir = path.join(deps.tempDir, "jobs", str(ctx.inputs, "jobUuid"));
+  const baseDir = jobWorkspace(deps.tempDir, str(ctx.inputs, "jobUuid"));
   const workingDirectory = await git.cloneRepo({ repo, token: deps.token, baseDir });
   const baseBranch = await deps.client.getDefaultBranch(repo);
   return { workingDirectory, baseBranch };

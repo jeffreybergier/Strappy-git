@@ -3,6 +3,7 @@ import { createLogger } from "../logger.js";
 import { runJob } from "../jobs/scheduler.js";
 import { SequentialQueue } from "../jobs/queue.js";
 import { StepKindRegistry } from "../jobs/stepKinds.js";
+import type { StepValues } from "../jobs/stepKinds.js";
 import type { JobWriteStore, TriggerLedger } from "../jobs/store.js";
 import type { Job } from "../jobs/types.js";
 import type { GitHubClient, IssueRef } from "./client.js";
@@ -46,6 +47,8 @@ export interface IssuePollerDeps {
   job: Job;
   whitelist: readonly string[];
   intervalMs: number;
+  // Teardown handed to the scheduler; removes the run's clone workspace.
+  cleanup?: (triggerInputs: StepValues) => Promise<void> | void;
 }
 
 // Watches auto-discovered repos for new issues. The whole "should we act?"
@@ -60,6 +63,7 @@ export class IssuePoller {
   private readonly job: Job;
   private readonly whitelist: readonly string[];
   private readonly intervalMs: number;
+  private readonly cleanup?: (triggerInputs: StepValues) => Promise<void> | void;
   private readonly queue: SequentialQueue<QueueItem>;
   private timer: ReturnType<typeof setInterval> | null = null;
 
@@ -72,12 +76,16 @@ export class IssuePoller {
     if (!Number.isInteger(deps.intervalMs) || deps.intervalMs <= 0) {
       throw new Error("[IssuePoller] intervalMs must be a positive integer");
     }
+    if (deps.cleanup !== undefined && typeof deps.cleanup !== "function") {
+      throw new Error("[IssuePoller] cleanup must be a function");
+    }
     this.client = deps.client;
     this.store = deps.store;
     this.registry = deps.registry;
     this.job = deps.job;
     this.whitelist = deps.whitelist;
     this.intervalMs = deps.intervalMs;
+    this.cleanup = deps.cleanup;
     this.queue = new SequentialQueue((item) => this.runItem(item));
   }
 
@@ -148,7 +156,7 @@ export class IssuePoller {
       const run = await runJob(
         this.job,
         { repo: item.repo, issueNumber: item.issueNumber, issueAuthor: item.issueAuthor, jobUuid: item.jobUuid },
-        { registry: this.registry, store: this.store, newRunId: () => item.runId },
+        { registry: this.registry, store: this.store, newRunId: () => item.runId, ...(this.cleanup && { cleanup: this.cleanup }) },
       );
       this.store.setStatus(item.repo, item.issueNumber, run.status);
       log.info("run", `${item.repo}#${item.issueNumber} -> ${run.status} (${item.runId})`);

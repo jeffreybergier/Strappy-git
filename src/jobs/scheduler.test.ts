@@ -196,6 +196,37 @@ test("the registry rejects duplicate registration and unknown kinds", () => {
   assert.throws(() => registry.resolve("nope"), /unknown step kind/);
 });
 
+test("an optional cleanup hook runs after a successful run and receives the trigger", async () => {
+  const seen: StepValues[] = [];
+  const registry = new StepKindRegistry().register("ok", () => ({}));
+  const run = await runJob(job("j", [step("s1", "ok", [], [])]), { jobUuid: "u1" }, {
+    registry,
+    cleanup: (trigger) => { seen.push(trigger); },
+  });
+  assert.equal(run.status, "succeeded");
+  assert.deepEqual(seen, [{ jobUuid: "u1" }]);
+});
+
+test("the cleanup hook still runs after a failed run (teardown on the failure path)", async () => {
+  let cleaned = false;
+  const registry = new StepKindRegistry().register("boom", () => { throw new Error("kaboom"); });
+  const run = await runJob(job("j", [step("s1", "boom", [], [])]), { jobUuid: "u2" }, {
+    registry,
+    cleanup: () => { cleaned = true; },
+  });
+  assert.equal(run.status, "failed");
+  assert.equal(cleaned, true);
+});
+
+test("a throwing cleanup hook is swallowed and never changes the run result", async () => {
+  const registry = new StepKindRegistry().register("ok", () => ({}));
+  const run = await runJob(job("j", [step("s1", "ok", [], [])]), {}, {
+    registry,
+    cleanup: () => { throw new Error("rm failed"); },
+  });
+  assert.equal(run.status, "succeeded");
+});
+
 test("runJob validates its arguments", async () => {
   await assert.rejects(runJob(undefined as never, {}, { registry: defaultStepKinds() }), /job must be a valid Job/);
   await assert.rejects(runJob(job("j", []), {}, {} as never), /registry is required/);

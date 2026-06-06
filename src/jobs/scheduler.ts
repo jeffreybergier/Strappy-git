@@ -13,6 +13,9 @@ export interface RunJobOptions {
   store?: JobWriteStore;
   now?: () => string;
   newRunId?: () => string;
+  // Optional teardown run after the steps (success OR failure), e.g. removing the
+  // run's clone workspace. Receives the ambient trigger constants; best-effort.
+  cleanup?: (triggerInputs: StepValues) => Promise<void> | void;
 }
 
 interface Outcome {
@@ -33,11 +36,15 @@ export async function runJob(job: Job, triggerInputs: StepValues, options: RunJo
   let previous: StepValues = {};
   const stepRuns: StepRun[] = [];
   let failed = false;
-  for (const step of job.steps) {
-    const outcome = failed ? skip(step) : await runStep(step, trigger, previous, options.registry, now);
-    stepRuns.push(outcome.stepRun);
-    if (outcome.stepRun.status === "failed") failed = true;
-    else if (outcome.outputs) previous = outcome.outputs;
+  try {
+    for (const step of job.steps) {
+      const outcome = failed ? skip(step) : await runStep(step, trigger, previous, options.registry, now);
+      stepRuns.push(outcome.stepRun);
+      if (outcome.stepRun.status === "failed") failed = true;
+      else if (outcome.outputs) previous = outcome.outputs;
+    }
+  } finally {
+    await runCleanup(options.cleanup, trigger);
   }
   const run = buildRun(job, startedAt, now(), failed, stepRuns, options.newRunId ?? defaultRunId);
   options.store?.recordRun(run);
@@ -106,6 +113,18 @@ function collectOutput(step: ProcessStep, io: StepIO, inputs: StepValues, produc
 
 function skip(step: ProcessStep): Outcome {
   return { stepRun: { stepId: step.id, status: "skipped" } };
+}
+
+// Runs the optional teardown on both the success and failure paths (finally), so
+// the clone is removed even mid-process. A teardown error is logged, never thrown
+// — it must not flip a finished run's result.
+async function runCleanup(cleanup: RunJobOptions["cleanup"], trigger: StepValues): Promise<void> {
+  if (cleanup === undefined) return;
+  try {
+    await cleanup(trigger);
+  } catch (error) {
+    log.warn("cleanup", `workspace teardown failed: ${message(error)}`);
+  }
 }
 
 function buildRun(job: Job, startedAt: string, finishedAt: string, failed: boolean, stepRuns: StepRun[], newRunId: () => string): JobRun {

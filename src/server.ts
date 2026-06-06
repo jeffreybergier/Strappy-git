@@ -10,7 +10,7 @@ import { seedJobs, seedRuns } from "./jobs/seed.js";
 import { dashboardRouter } from "./routes/dashboard.js";
 import { apiRouter } from "./routes/api.js";
 import { createGitHubClient } from "./github/client.js";
-import { githubStepKinds } from "./jobs/githubKinds.js";
+import { githubStepKinds, githubCleanup } from "./jobs/githubKinds.js";
 import { IssuePoller } from "./github/poller.js";
 import { processIssueJob } from "./jobs/processIssueJob.js";
 
@@ -53,16 +53,17 @@ function startPoller(store: SqliteJobStore): void {
     log.warn("startPoller", "STRAPPY_USER_WHITELIST empty — poller will act for nobody (fail-closed)");
   }
   const client = createGitHubClient(token);
-  const registry = githubStepKinds({
+  const deps = {
     client,
     token,
     tempDir: config.github.tempDir,
     committer: { name: config.github.committerName, email: config.github.committerEmail },
-  });
+  };
   new IssuePoller({
     client,
     store,
-    registry,
+    registry: githubStepKinds(deps),
+    cleanup: githubCleanup(deps),
     job: processIssueJob(),
     whitelist: config.github.userWhitelist,
     intervalMs: config.github.pollIntervalMs,

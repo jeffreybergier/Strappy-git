@@ -60,6 +60,15 @@ export async function cloneRepo(input: CloneInput): Promise<string> {
   return dest;
 }
 
+// Best-effort recursive remove (force: a missing dir is not an error), used to
+// tear down a run's clone workspace. Caller wraps it so a teardown failure never
+// fails the run.
+export async function removeDir(dir: string): Promise<void> {
+  if (typeof dir !== "string" || dir === "") throw new Error("[Git.removeDir] dir is required");
+  await fs.rm(dir, { recursive: true, force: true });
+  log.info("removeDir", `removed ${dir}`);
+}
+
 export async function createBranch(workdir: string, branch: string): Promise<void> {
   await runGit(["-C", workdir, "checkout", "-b", branch]);
   log.info("createBranch", `created ${branch}`);
