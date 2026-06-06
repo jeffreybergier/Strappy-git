@@ -2,7 +2,49 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
-import { summarizeExecution } from "./pi.js";
+import { summarizeExecution, createStreamPrinter } from "./pi.js";
+
+// Synthetic session events for the stream printer; cast past the SDK's event union.
+const ev = (e: Record<string, unknown>): never => e as never;
+
+function capture(fn: () => void): string[] {
+  const lines: string[] = [];
+  const { info, warn } = console;
+  console.info = (...a: unknown[]) => void lines.push(a.map(String).join(" "));
+  console.warn = (...a: unknown[]) => void lines.push(a.map(String).join(" "));
+  try {
+    fn();
+  } finally {
+    Object.assign(console, { info, warn });
+  }
+  return lines;
+}
+
+test("createStreamPrinter logs tool calls and flushes streamed text line-by-line", () => {
+  const printer = createStreamPrinter();
+  const lines = capture(() => {
+    printer.handle(ev({ type: "tool_execution_start", toolCallId: "1", toolName: "bash", args: { command: "ls -R" } }));
+    printer.handle(ev({ type: "message_update", message: {}, assistantMessageEvent: { type: "text_delta", delta: "first line\nsecond " } }));
+    printer.handle(ev({ type: "tool_execution_end", toolCallId: "2", toolName: "write", isError: true }));
+    printer.end(); // flushes the trailing partial line
+  });
+  assert.ok(lines.some((l) => l.includes("tool bash") && l.includes("ls -R")));
+  assert.ok(lines.some((l) => l.includes("first line")));
+  assert.ok(lines.some((l) => l.includes("second")));
+  assert.ok(lines.some((l) => l.includes("tool write failed")));
+});
+
+test("createStreamPrinter surfaces a write's path but truncates long arguments", () => {
+  const longCmd = `echo ${"a".repeat(500)}`;
+  const lines = capture(() => {
+    createStreamPrinter().handle(ev({ type: "tool_execution_start", toolCallId: "1", toolName: "write", args: { path: "src/x.ts", content: "z".repeat(999) } }));
+    createStreamPrinter().handle(ev({ type: "tool_execution_start", toolCallId: "2", toolName: "bash", args: { command: longCmd } }));
+  });
+  const writeLine = lines.find((l) => l.includes("tool write"));
+  const bashLine = lines.find((l) => l.includes("tool bash"));
+  assert.ok(writeLine?.includes("src/x.ts") && !writeLine.includes("zzz")); // path shown, content not dumped
+  assert.ok(bashLine?.includes("…") && bashLine.length < longCmd.length); // long arg truncated
+});
 
 function usage(input: number, output: number, cost: number): Usage {
   return {

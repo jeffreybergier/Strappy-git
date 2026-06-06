@@ -32,7 +32,7 @@ export function githubStepKinds(deps: GitHubKindDeps): StepKindRegistry {
 
 async function fetchIssue(deps: GitHubKindDeps, ctx: StepContext): Promise<StepValues> {
   const issue = await deps.client.getIssue(str(ctx.inputs, "repo"), num(ctx.inputs, "issueNumber"));
-  return { issueTitle: issue.title, issueBody: issue.body, prompt: buildPrompt(issue.title, issue.body) };
+  return { issueTitle: issue.title, issueBody: issue.body, userPrompt: buildPrompt(issue.title, issue.body) };
 }
 
 // Renders the fetched issue into the user message the implement step prompts with.
@@ -44,22 +44,22 @@ function buildPrompt(title: string, body: string): string {
 async function cloneRepo(deps: GitHubKindDeps, ctx: StepContext): Promise<StepValues> {
   const repo = str(ctx.inputs, "repo");
   const baseDir = path.join(deps.tempDir, "jobs", str(ctx.inputs, "jobUuid"));
-  const workdir = await git.cloneRepo({ repo, token: deps.token, baseDir });
+  const workingDirectory = await git.cloneRepo({ repo, token: deps.token, baseDir });
   const baseBranch = await deps.client.getDefaultBranch(repo);
-  return { workdir, baseBranch };
+  return { workingDirectory, baseBranch };
 }
 
 async function createBranch(ctx: StepContext): Promise<StepValues> {
   const branch = `strappy/issue-${num(ctx.inputs, "issueNumber")}`;
-  await git.createBranch(str(ctx.inputs, "workdir"), branch);
+  await git.createBranch(str(ctx.inputs, "workingDirectory"), branch);
   return { branch };
 }
 
 async function commitPush(deps: GitHubKindDeps, ctx: StepContext): Promise<StepValues> {
-  const workdir = str(ctx.inputs, "workdir");
+  const workingDirectory = str(ctx.inputs, "workingDirectory");
   const branch = str(ctx.inputs, "branch");
-  await git.commitAll(workdir, str(ctx.inputs, "commitMessage"), deps.committer);
-  await git.pushBranch(workdir, branch, deps.token);
+  await git.commitAll(workingDirectory, str(ctx.inputs, "commitMessage"), deps.committer);
+  await git.pushBranch(workingDirectory, branch, deps.token);
   return { pushed: true };
 }
 
@@ -70,7 +70,7 @@ async function openPullRequest(deps: GitHubKindDeps, ctx: StepContext): Promise<
     head: str(ctx.inputs, "branch"),
     base: str(ctx.inputs, "baseBranch"),
     title: `Strappy: issue #${n}`,
-    body: str(ctx.inputs, "prSummary"),
+    body: str(ctx.inputs, "pullRequestSummary"),
   });
   return { prNumber: pr.number, prUrl: pr.url };
 }

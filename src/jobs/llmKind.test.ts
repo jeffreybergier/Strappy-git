@@ -11,8 +11,8 @@ function execution(): LlmExecution {
     model: "m",
     stopReason: "toolUse",
     text: "",
-    toolCalls: [{ id: "c1", name: "submit_ask", arguments: { category: "bug" } }],
-    usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15, costTotal: 0 },
+    toolCalls: [{ id: "c1", name: "submit_ask", arguments: { commitMessage: "m" } }],
+    usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15, costTotal: 0.0042 },
   };
 }
 
@@ -20,61 +20,72 @@ function result(values: Record<string, unknown>): StructuredResult {
   return { values, execution: execution() };
 }
 
-function step(outputs: string[], systemPrompt?: string): ProcessStep {
+function step(outputs: string[]): ProcessStep {
   return {
     id: "ask",
     kind: "llm",
     name: "Ask",
     description: "",
-    ...(systemPrompt !== undefined && { systemPrompt }),
-    inputs: [{ key: "prompt", type: "string", description: "" }],
-    outputs: outputs.map((key) => ({ key, type: "string", description: "" })),
+    inputs: [{ key: "userPrompt", type: "string", description: "" }],
+    outputs: outputs.map((key) => ({ key, type: key === "cost" ? "number" : "string", description: "" })),
   };
 }
 
-function ctx(
-  inputs: Record<string, unknown>,
-  outputs: string[],
-  record?: (e: LlmExecution) => void,
-  systemPrompt?: string,
-): StepContext {
-  return { step: step(outputs, systemPrompt), inputs, ...(record && { recordExecution: record }) };
+function ctx(inputs: Record<string, unknown>, outputs: string[], record?: (e: LlmExecution) => void): StepContext {
+  return { step: step(outputs), inputs, ...(record && { recordExecution: record }) };
 }
 
-test("llmStepKind derives a schema from outputs, records the execution, and emits the validated values", async () => {
+test("llmStepKind derives the submit schema from outputs, records the execution, and emits the validated values", async () => {
   let seenPrompt = "";
   let seenSystem: string | undefined = "UNSET";
   let seenTool = "";
   let seenCwd = "";
   let seenKeys: string[] = [];
   let recorded: LlmExecution | undefined;
-  const kind = llmStepKind(async (prompt, system, schema, tool, cwd) => {
-    seenPrompt = prompt;
+  const kind = llmStepKind(async (userPrompt, system, schema, tool, cwd) => {
+    seenPrompt = userPrompt;
     seenSystem = system;
     seenTool = tool;
     seenCwd = cwd;
     seenKeys = Object.keys(schema.properties);
-    return result({ category: "bug", difficulty: 2, rationale: "looks like a crash" });
+    return result({ commitMessage: "feat: add x", pullRequestSummary: "Added x." });
   });
   const outputs = await kind(
-    ctx({ prompt: "the issue", workdir: "/tmp/jobs/uuid" }, ["category", "difficulty", "rationale"], (e) => { recorded = e; }, "You are implementation."),
+    ctx(
+      { systemPrompt: "You are implementation.", userPrompt: "the issue", workingDirectory: "/tmp/jobs/uuid" },
+      ["commitMessage", "pullRequestSummary"],
+      (e) => { recorded = e; },
+    ),
   );
-  assert.deepEqual(outputs, { category: "bug", difficulty: 2, rationale: "looks like a crash" });
+  assert.deepEqual(outputs, { commitMessage: "feat: add x", pullRequestSummary: "Added x." });
   assert.deepEqual(recorded, execution());
   assert.equal(seenPrompt, "the issue");
   assert.equal(seenSystem, "You are implementation.");
   assert.equal(seenTool, "submit_ask");
   assert.equal(seenCwd, "/tmp/jobs/uuid");
-  assert.deepEqual(seenKeys, ["category", "difficulty", "rationale"]);
+  assert.deepEqual(seenKeys, ["commitMessage", "pullRequestSummary"]);
 });
 
-test("llmStepKind passes undefined systemPrompt when the step declares none", async () => {
+test("llmStepKind fills a derived `cost` output from the execution and keeps it out of the model schema", async () => {
+  let seenKeys: string[] = [];
+  const kind = llmStepKind(async (_prompt, _system, schema) => {
+    seenKeys = Object.keys(schema.properties);
+    return result({ commitMessage: "m", pullRequestSummary: "s" });
+  });
+  const outputs = await kind(
+    ctx({ userPrompt: "go", workingDirectory: "/tmp/r" }, ["commitMessage", "pullRequestSummary", "cost"]),
+  );
+  assert.deepEqual(seenKeys, ["commitMessage", "pullRequestSummary"]); // the model is never asked for cost
+  assert.equal(outputs.cost, 0.0042); // taken from execution().usage.costTotal
+});
+
+test("llmStepKind passes undefined systemPrompt when the step has no systemPrompt input", async () => {
   let seenSystem: string | undefined = "UNSET";
   const kind = llmStepKind(async (_prompt, system) => {
     seenSystem = system;
     return result({ out: "x" });
   });
-  await kind(ctx({ prompt: "go", workdir: "/tmp/r" }, ["out"]));
+  await kind(ctx({ userPrompt: "go", workingDirectory: "/tmp/r" }, ["out"]));
   assert.equal(seenSystem, undefined);
 });
 
@@ -89,21 +100,21 @@ test("llmStepKind sanitizes the step id into an identifier-safe tool name", asyn
     kind: "llm",
     name: "T",
     description: "",
-    inputs: [{ key: "prompt", type: "string", description: "" }],
+    inputs: [{ key: "userPrompt", type: "string", description: "" }],
     outputs: [{ key: "out", type: "string", description: "" }],
   };
-  await kind({ step: dashed, inputs: { prompt: "hi", workdir: "/tmp/r" } });
+  await kind({ step: dashed, inputs: { userPrompt: "hi", workingDirectory: "/tmp/r" } });
   assert.equal(seenTool, "submit_implement_issue");
 });
 
-test("llmStepKind requires a non-empty prompt input", async () => {
-  const kind = llmStepKind(async () => result({ category: "x" }));
-  await assert.rejects(async () => { await kind(ctx({ workdir: "/tmp/r" }, ["category"])); }, /non-empty string input "prompt"/);
+test("llmStepKind requires a non-empty userPrompt input", async () => {
+  const kind = llmStepKind(async () => result({ out: "x" }));
+  await assert.rejects(async () => { await kind(ctx({ workingDirectory: "/tmp/r" }, ["out"])); }, /non-empty string input "userPrompt"/);
 });
 
-test("llmStepKind requires a workdir input so the model runs in the cloned repo", async () => {
+test("llmStepKind requires a workingDirectory input so the model runs in the cloned repo", async () => {
   const kind = llmStepKind(async () => result({ out: "x" }));
-  await assert.rejects(async () => { await kind(ctx({ prompt: "hi" }, ["out"])); }, /non-empty string input "workdir"/);
+  await assert.rejects(async () => { await kind(ctx({ userPrompt: "hi" }, ["out"])); }, /non-empty string input "workingDirectory"/);
 });
 
 test("llmStepKind rejects a non-function runner", () => {

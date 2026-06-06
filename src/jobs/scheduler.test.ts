@@ -48,6 +48,26 @@ test("runJob threads one step's outputs into the next step's inputs", async () =
   assert.deepEqual(seen, { token: "abc" });
 });
 
+test("a declared systemPrompt input is sourced from the step's own systemPrompt, not the bus", async () => {
+  const seen: StepValues = {};
+  const registry = new StepKindRegistry().register("llm", (ctx) => {
+    Object.assign(seen, ctx.inputs);
+    return { out: "x" };
+  });
+  const llm: ProcessStep = {
+    id: "ask",
+    kind: "llm",
+    name: "Ask",
+    description: "",
+    systemPrompt: "be terse",
+    inputs: [{ key: "systemPrompt", type: "string", description: "" }],
+    outputs: [{ key: "out", type: "string", description: "" }],
+  };
+  const run = await runJob(job("j", [llm]), {}, { registry });
+  assert.equal(run.status, "succeeded");
+  assert.equal(seen.systemPrompt, "be terse");
+});
+
 test("runJob runs a seeded job with default kinds and records a succeeded run", async () => {
   const db = openDatabase(":memory:");
   const store = new SqliteJobStore(db);

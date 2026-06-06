@@ -29,6 +29,7 @@ const log = createLogger("PiClient");
 // Derive the session type from the SDK return value so we stay type-safe
 // without depending on a named export that may change.
 type AgentSession = Awaited<ReturnType<typeof createAgentSession>>["session"];
+type SessionEvent = Parameters<Parameters<AgentSession["subscribe"]>[0]>[0];
 
 let auth: AuthStorage | null = null;
 let registry: ModelRegistry | null = null;
@@ -172,12 +173,67 @@ async function cleanLoader(systemPrompt: string, cwd: string): Promise<DefaultRe
 
 function collect(session: AgentSession, prompt: string): Promise<LlmExecution> {
   return new Promise<LlmExecution>((resolve, reject) => {
+    const printer = createStreamPrinter();
     const unsubscribe = session.subscribe((event) => {
+      printer.handle(event);
       if (event.type !== "agent_end" || event.willRetry) return;
+      printer.end();
       finish(unsubscribe, () => resolve(summarizeExecution(event.messages)));
     });
-    session.prompt(prompt).catch((error: unknown) => finish(unsubscribe, () => reject(error)));
+    session.prompt(prompt).catch((error: unknown) => {
+      printer.end();
+      finish(unsubscribe, () => reject(error));
+    });
   });
+}
+
+// Live-prints model output to the server log as the agent streams it: assistant
+// text and reasoning are flushed line-by-line (kept namespaced via the logger),
+// and each tool the model runs is logged as it starts — so a tool-heavy step
+// shows its actions in real time instead of only at the end.
+export function createStreamPrinter(): { handle: (event: SessionEvent) => void; end: () => void } {
+  let line = "";
+  const flush = (): void => {
+    if (line.trim() !== "") log.info("stream", line.trim());
+    line = "";
+  };
+  const onDelta = (delta: string): void => {
+    line += delta;
+    let nl = line.indexOf("\n");
+    while (nl !== -1) {
+      const out = line.slice(0, nl).trim();
+      if (out !== "") log.info("stream", out);
+      line = line.slice(nl + 1);
+      nl = line.indexOf("\n");
+    }
+  };
+  const handle = (event: SessionEvent): void => {
+    if (event.type === "message_end") return flush();
+    if (event.type === "tool_execution_start") return logTool(event.toolName, event.args);
+    if (event.type === "tool_execution_end" && event.isError) return void log.warn("stream", `tool ${event.toolName} failed`);
+    if (event.type !== "message_update") return;
+    const ev = event.assistantMessageEvent;
+    if (ev.type === "text_delta" || ev.type === "thinking_delta") onDelta(ev.delta);
+  };
+  return { handle, end: flush };
+}
+
+function logTool(name: string, args: unknown): void {
+  log.info("stream", `tool ${name}${describeArgs(args)}`);
+}
+
+// Surfaces the one telling argument (the command/path) so the log stays readable
+// rather than dumping a whole file's contents from a write/edit call.
+function describeArgs(args: unknown): string {
+  if (args === null || typeof args !== "object") return "";
+  const record = args as Record<string, unknown>;
+  const key = ["command", "path", "file_path", "pattern", "url"].find((k) => typeof record[k] === "string");
+  return key === undefined ? "" : `: ${truncate(String(record[key]))}`;
+}
+
+function truncate(value: string): string {
+  const flat = value.replace(/\s+/g, " ").trim();
+  return flat.length > 140 ? `${flat.slice(0, 140)}…` : flat;
 }
 
 function finish(unsubscribe: () => void, action: () => void): void {

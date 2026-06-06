@@ -58,12 +58,16 @@ async function runStep(step: ProcessStep, bus: StepValues, registry: StepKindReg
 }
 
 // Pulls each declared input off the shared bus; a missing key means an upstream
-// step never produced it — a contract violation, so the step fails.
+// step never produced it — a contract violation, so the step fails. A
+// "systemPrompt" input is the exception: it carries the step's own authored
+// instructions (loaded from prompts/*.md), so it is sourced from the step itself
+// rather than threaded through the bus.
 function resolveInputs(step: ProcessStep, bus: StepValues): StepValues {
   const inputs: StepValues = {};
   for (const io of step.inputs) {
-    if (!(io.key in bus)) throw new Error(`[Scheduler.resolveInputs] step "${step.id}" missing input "${io.key}"`);
-    inputs[io.key] = bus[io.key];
+    if (io.key in bus) inputs[io.key] = bus[io.key];
+    else if (io.key === "systemPrompt" && step.systemPrompt !== undefined) inputs[io.key] = step.systemPrompt;
+    else throw new Error(`[Scheduler.resolveInputs] step "${step.id}" missing input "${io.key}"`);
   }
   return inputs;
 }
