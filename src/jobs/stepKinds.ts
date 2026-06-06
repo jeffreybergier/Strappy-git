@@ -67,7 +67,14 @@ export function defaultStepKinds(): StepKindRegistry {
     .register("github.applyLabels", stubExecutor)
     .register("github.postComment", stubExecutor)
     .register("github.fetchDiff", stubExecutor)
-    .register("github.postReview", stubExecutor);
+    .register("github.postReview", stubExecutor)
+    .register("git.cloneRepo", stubExecutor)
+    .register("git.createBranch", stubExecutor)
+    .register("agent.applyChange", stubExecutor)
+    .register("git.commitPush", stubExecutor)
+    .register("github.openPullRequest", stubExecutor)
+    .register("github.commentIssue", stubExecutor)
+    .register("github.closeIssue", stubExecutor);
   log.info("defaultStepKinds", `registered ${registry.list().length} step kinds`);
   return registry;
 }

@@ -15,6 +15,13 @@ export interface JobWriteStore {
   recordRun(run: JobRun): void;
 }
 
+// De-dupe surface the poller uses so an issue is acted on at most once.
+export interface TriggerLedger {
+  isProcessed(repo: string, issueNumber: number): boolean;
+  markProcessing(repo: string, issueNumber: number, runId: string): void;
+  setStatus(repo: string, issueNumber: number, status: string): void;
+}
+
 export class JobStore implements JobReadStore {
   private readonly jobs: Map<string, Job>;
   private readonly runs: JobRun[];

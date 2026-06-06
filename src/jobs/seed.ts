@@ -1,4 +1,5 @@
 import type { Job, JobRun } from "./types.js";
+import { processIssueJob } from "./processIssueJob.js";
 
 export function seedJobs(): Job[] {
   return [
@@ -83,6 +84,7 @@ export function seedJobs(): Job[] {
         },
       ],
     },
+    processIssueJob(),
   ];
 }
 

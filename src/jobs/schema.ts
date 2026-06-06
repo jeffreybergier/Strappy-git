@@ -51,6 +51,15 @@ CREATE TABLE IF NOT EXISTS step_runs (
   note        TEXT,
   PRIMARY KEY (run_id, step_id)
 );
+
+CREATE TABLE IF NOT EXISTS processed_triggers (
+  repo         TEXT NOT NULL,
+  issue_number INTEGER NOT NULL,
+  run_id       TEXT,
+  status       TEXT NOT NULL,
+  processed_at TEXT NOT NULL,
+  PRIMARY KEY (repo, issue_number)
+);
 `;
 
 export function applySchema(db: DatabaseSync): void {

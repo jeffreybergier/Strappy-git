@@ -1,11 +1,20 @@
 import { DatabaseSync } from "node:sqlite";
-import { insertJob, insertRun, readJob, readJobs, readRuns } from "./db.js";
-import type { JobReadStore, JobWriteStore } from "./store.js";
+import {
+  insertJob,
+  insertRun,
+  isTriggerProcessed,
+  markTriggerProcessing,
+  readJob,
+  readJobs,
+  readRuns,
+  setTriggerStatus,
+} from "./db.js";
+import type { JobReadStore, JobWriteStore, TriggerLedger } from "./store.js";
 import type { Job, JobRun } from "./types.js";
 
 // JobReadStore backed by SQLite. Reads hydrate full Job/JobRun trees; the
 // write methods are the persistence seam for the future scheduler.
-export class SqliteJobStore implements JobReadStore, JobWriteStore {
+export class SqliteJobStore implements JobReadStore, JobWriteStore, TriggerLedger {
   private readonly db: DatabaseSync;
 
   constructor(db: DatabaseSync) {
@@ -34,5 +43,17 @@ export class SqliteJobStore implements JobReadStore, JobWriteStore {
   recordRun(run: JobRun): void {
     if (!run) throw new Error("[SqliteJobStore.recordRun] run is required");
     insertRun(this.db, run);
+  }
+
+  isProcessed(repo: string, issueNumber: number): boolean {
+    return isTriggerProcessed(this.db, repo, issueNumber);
+  }
+
+  markProcessing(repo: string, issueNumber: number, runId: string): void {
+    markTriggerProcessing(this.db, repo, issueNumber, runId);
+  }
+
+  setStatus(repo: string, issueNumber: number, status: string): void {
+    setTriggerStatus(this.db, repo, issueNumber, status);
   }
 }

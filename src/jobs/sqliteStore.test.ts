@@ -87,6 +87,17 @@ test("recordRun + listRuns round-trips an execution", () => {
   assert.deepEqual(store.listRuns(), [run]);
 });
 
+test("trigger ledger detects and records processed issues", () => {
+  const db = openDatabase(":memory:");
+  const store = new SqliteJobStore(db);
+  assert.equal(store.isProcessed("o/r", 5), false);
+  store.markProcessing("o/r", 5, "run-x");
+  assert.equal(store.isProcessed("o/r", 5), true);
+  assert.equal(store.isProcessed("o/r", 6), false);
+  store.setStatus("o/r", 5, "done");
+  assert.equal(store.isProcessed("o/r", 5), true);
+});
+
 test("constructor rejects a missing db", () => {
   assert.throws(() => new SqliteJobStore(undefined as never), /db is required/);
 });

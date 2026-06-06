@@ -177,6 +177,31 @@ function insertStepRun(db: DatabaseSync, runId: string, sr: StepRun, position: n
   ).run(runId, sr.stepId, position, sr.status, sr.startedAt ?? null, sr.finishedAt ?? null, sr.note ?? null);
 }
 
+// ---- de-dupe ledger ---------------------------------------------------------
+// One row per (repo, issue) Strappy has acted on, so the continuous poller never
+// re-processes (and never re-opens a PR for) the same issue.
+
+export function isTriggerProcessed(db: DatabaseSync, repo: string, issueNumber: number): boolean {
+  if (typeof repo !== "string" || repo === "") throw new Error("[Db.isTriggerProcessed] repo must be a non-empty string");
+  if (!Number.isInteger(issueNumber)) throw new Error("[Db.isTriggerProcessed] issueNumber must be an integer");
+  const row = db.prepare("SELECT 1 AS hit FROM processed_triggers WHERE repo = ? AND issue_number = ?").get(repo, issueNumber);
+  return row !== undefined;
+}
+
+export function markTriggerProcessing(db: DatabaseSync, repo: string, issueNumber: number, runId: string): void {
+  if (typeof repo !== "string" || repo === "") throw new Error("[Db.markTriggerProcessing] repo must be a non-empty string");
+  if (!Number.isInteger(issueNumber)) throw new Error("[Db.markTriggerProcessing] issueNumber must be an integer");
+  if (typeof runId !== "string" || runId === "") throw new Error("[Db.markTriggerProcessing] runId must be a non-empty string");
+  db.prepare(
+    "INSERT INTO processed_triggers (repo, issue_number, run_id, status, processed_at) VALUES (?, ?, ?, 'processing', ?)",
+  ).run(repo, issueNumber, runId, new Date().toISOString());
+}
+
+export function setTriggerStatus(db: DatabaseSync, repo: string, issueNumber: number, status: string): void {
+  if (typeof status !== "string" || status === "") throw new Error("[Db.setTriggerStatus] status must be a non-empty string");
+  db.prepare("UPDATE processed_triggers SET status = ? WHERE repo = ? AND issue_number = ?").run(status, repo, issueNumber);
+}
+
 export function seedDatabase(db: DatabaseSync, jobs: Job[], runs: JobRun[]): void {
   if (!Array.isArray(jobs) || !Array.isArray(runs)) {
     throw new Error("[Db.seedDatabase] jobs and runs must be arrays");
