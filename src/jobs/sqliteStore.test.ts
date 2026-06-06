@@ -59,6 +59,7 @@ test("saveJob + getJob round-trips a new job with its IO contract", () => {
     steps: [
       {
         id: "say",
+        kind: "noop",
         name: "Say",
         description: "Echo the input.",
         inputs: [{ key: "in", type: "string", description: "text in" }],

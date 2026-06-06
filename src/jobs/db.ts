@@ -58,7 +58,7 @@ export function readRuns(db: DatabaseSync): JobRun[] {
 function hydrateJob(db: DatabaseSync, row: Row): Job {
   const id = text(row, "id");
   const stepRows = db
-    .prepare("SELECT id, name, description FROM process_steps WHERE job_id = ? ORDER BY position")
+    .prepare("SELECT id, kind, name, description FROM process_steps WHERE job_id = ? ORDER BY position")
     .all(id);
   return {
     id,
@@ -73,6 +73,7 @@ function hydrateStep(db: DatabaseSync, jobId: string, row: Row): ProcessStep {
   const stepId = text(row, "id");
   return {
     id: stepId,
+    kind: text(row, "kind"),
     name: text(row, "name"),
     description: text(row, "description"),
     inputs: readIO(db, jobId, stepId, "input"),
@@ -140,10 +141,11 @@ export function insertJob(db: DatabaseSync, job: Job): void {
 }
 
 function insertStep(db: DatabaseSync, jobId: string, step: ProcessStep, position: number): void {
-  db.prepare("INSERT INTO process_steps (id, job_id, position, name, description) VALUES (?, ?, ?, ?, ?)").run(
+  db.prepare("INSERT INTO process_steps (id, job_id, position, kind, name, description) VALUES (?, ?, ?, ?, ?, ?)").run(
     step.id,
     jobId,
     position,
+    step.kind,
     step.name,
     step.description,
   );

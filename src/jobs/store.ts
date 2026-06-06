@@ -9,6 +9,12 @@ export interface JobReadStore {
   listRuns(): JobRun[];
 }
 
+// Write surface the scheduler uses to persist jobs and record executed runs.
+export interface JobWriteStore {
+  saveJob(job: Job): void;
+  recordRun(run: JobRun): void;
+}
+
 export class JobStore implements JobReadStore {
   private readonly jobs: Map<string, Job>;
   private readonly runs: JobRun[];

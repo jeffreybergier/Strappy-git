@@ -10,6 +10,7 @@ export function seedJobs(): Job[] {
       steps: [
         {
           id: "fetch-issue",
+          kind: "github.fetchIssue",
           name: "Fetch Issue",
           description: "Pull the issue payload from the GitHub API.",
           inputs: [
@@ -20,6 +21,7 @@ export function seedJobs(): Job[] {
         },
         {
           id: "classify",
+          kind: "llm",
           name: "Classify (LLM)",
           description: "Ask an open-source model via OpenRouter to label and summarize.",
           inputs: [{ key: "issue", type: "Issue", description: "From fetch-issue" }],
@@ -30,6 +32,7 @@ export function seedJobs(): Job[] {
         },
         {
           id: "apply-labels",
+          kind: "github.applyLabels",
           name: "Apply Labels",
           description: "Write the suggested labels back to the issue.",
           inputs: [{ key: "labels", type: "string[]", description: "From classify" }],
@@ -37,6 +40,7 @@ export function seedJobs(): Job[] {
         },
         {
           id: "post-summary",
+          kind: "github.postComment",
           name: "Post Summary",
           description: "Comment the summary on the issue.",
           inputs: [{ key: "summary", type: "string", description: "From classify" }],
@@ -52,6 +56,7 @@ export function seedJobs(): Job[] {
       steps: [
         {
           id: "fetch-diff",
+          kind: "github.fetchDiff",
           name: "Fetch Diff",
           description: "Retrieve the unified diff for the pull request.",
           inputs: [
@@ -62,6 +67,7 @@ export function seedJobs(): Job[] {
         },
         {
           id: "analyze",
+          kind: "llm",
           name: "Analyze (LLM)",
           description: "Ask the model to find issues and suggestions in the diff.",
           inputs: [{ key: "diff", type: "string", description: "From fetch-diff" }],
@@ -69,6 +75,7 @@ export function seedJobs(): Job[] {
         },
         {
           id: "post-review",
+          kind: "github.postReview",
           name: "Post Review",
           description: "Publish the findings as a PR review.",
           inputs: [{ key: "findings", type: "Finding[]", description: "From analyze" }],

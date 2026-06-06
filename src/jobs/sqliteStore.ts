@@ -1,11 +1,11 @@
 import { DatabaseSync } from "node:sqlite";
 import { insertJob, insertRun, readJob, readJobs, readRuns } from "./db.js";
-import type { JobReadStore } from "./store.js";
+import type { JobReadStore, JobWriteStore } from "./store.js";
 import type { Job, JobRun } from "./types.js";
 
 // JobReadStore backed by SQLite. Reads hydrate full Job/JobRun trees; the
 // write methods are the persistence seam for the future scheduler.
-export class SqliteJobStore implements JobReadStore {
+export class SqliteJobStore implements JobReadStore, JobWriteStore {
   private readonly db: DatabaseSync;
 
   constructor(db: DatabaseSync) {

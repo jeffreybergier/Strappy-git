@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS process_steps (
   id          TEXT NOT NULL,
   job_id      TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
   position    INTEGER NOT NULL,
+  kind        TEXT NOT NULL,
   name        TEXT NOT NULL,
   description TEXT NOT NULL,
   PRIMARY KEY (job_id, id)

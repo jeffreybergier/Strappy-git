@@ -13,6 +13,8 @@ export interface StepIO {
 
 export interface ProcessStep {
   id: string;
+  // Registered step-kind key; the StepKindRegistry resolves it to an executor.
+  kind: string;
   name: string;
   description: string;
   inputs: StepIO[];
