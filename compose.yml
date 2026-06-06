@@ -1,0 +1,44 @@
+services:
+  altivec-intelligence:
+    image: ghcr.io/jeffreybergier/altivec-intelligence:latest
+    stdin_open: true
+    tty: true
+    environment:
+      - IS_SANDBOX=1
+    volumes:
+      - ~/.strappy:/root
+      - .:/repo/strappy-git
+    working_dir: /repo/strappy-git
+    entrypoint: /bin/bash
+    command: -lc "altivec-chooser"
+
+  shell:
+    image: ghcr.io/jeffreybergier/altivec-intelligence:latest
+    volumes:
+      - ~/.strappy:/root
+      - .:/repo/strappy-git
+    working_dir: /repo/strappy-git
+
+  # Runs the jobs dashboard and publishes it to the Mac host.
+  # Browse http://localhost:3000 on the Mac after `docker compose up serve`.
+  serve:
+    image: ghcr.io/jeffreybergier/altivec-intelligence:latest
+    working_dir: /repo/strappy-git
+    volumes:
+      - ~/.strappy:/root
+      - .:/repo/strappy-git
+    ports:
+      - "3000:3000"
+    entrypoint: /bin/bash
+    command: -lc "npm install --no-fund --no-audit && npm run dev"
+
+  # Runs the Node.js test suite once and exits with the test result code.
+  # Run with: docker compose run --rm test
+  test:
+    image: ghcr.io/jeffreybergier/altivec-intelligence:latest
+    working_dir: /repo/strappy-git
+    volumes:
+      - ~/.strappy:/root
+      - .:/repo/strappy-git
+    entrypoint: /bin/bash
+    command: -lc "npm install --no-fund --no-audit && npm test"
