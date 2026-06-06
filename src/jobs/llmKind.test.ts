@@ -84,6 +84,21 @@ test("llmStepKind fills a derived `cost` output from the execution and keeps it 
   assert.equal(outputs.cost, 0.0042); // taken from execution().usage.costTotal
 });
 
+test("llmStepKind derives model and token counts from the execution, keeping them out of the model schema", async () => {
+  let seenKeys: string[] = [];
+  const kind = llmStepKind(async (_prompt, _system, schema) => {
+    seenKeys = Object.keys(schema.properties);
+    return result({ commitMessage: "m" });
+  });
+  const outputs = await kind(
+    ctx({ userPrompt: "go", workingDirectory: "/tmp/r" }, ["commitMessage", "model", "inputTokens", "outputTokens"]),
+  );
+  assert.deepEqual(seenKeys, ["commitMessage"]); // model/tokens are never asked of the model
+  assert.equal(outputs.model, "m");
+  assert.equal(outputs.inputTokens, 10);
+  assert.equal(outputs.outputTokens, 5);
+});
+
 test("llmStepKind passes undefined systemPrompt when the step has no systemPrompt input", async () => {
   let seenSystem: string | undefined = "UNSET";
   const kind = llmStepKind(async (_prompt, system) => {

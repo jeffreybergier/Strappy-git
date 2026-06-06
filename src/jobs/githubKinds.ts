@@ -85,10 +85,53 @@ async function openPullRequest(deps: GitHubKindDeps, ctx: StepContext): Promise<
     repo: str(ctx.inputs, "repo"),
     head: str(ctx.inputs, "newBranch"),
     base: str(ctx.inputs, "baseBranch"),
-    title: `Strappy: issue #${n}`,
-    body: str(ctx.inputs, "pullRequestSummary"),
+    title: prTitle(str(ctx.inputs, "pullRequestTitle"), n),
+    body: prBody(str(ctx.inputs, "pullRequestSummary"), {
+      model: str(ctx.inputs, "model"),
+      cost: num(ctx.inputs, "cost"),
+      inputTokens: num(ctx.inputs, "inputTokens"),
+      outputTokens: num(ctx.inputs, "outputTokens"),
+    }),
   });
   return { prNumber: pr.number, prUrl: pr.url };
+}
+
+// Pi's reported spend for the implementation step, rendered into the PR footer.
+export interface PrUsage {
+  model: string;
+  cost: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+// "Strappy: <model-authored title> (#n)": keeps the bot prefix and the issue
+// link for traceability, but the body of the title now describes the change.
+export function prTitle(modelTitle: string, issueNumber: number): string {
+  if (typeof modelTitle !== "string" || modelTitle.trim() === "") throw new Error("[githubKinds.prTitle] modelTitle is required");
+  if (!Number.isFinite(issueNumber)) throw new Error("[githubKinds.prTitle] issueNumber must be a number");
+  return `Strappy: ${modelTitle.trim()} (#${issueNumber})`;
+}
+
+// The model's summary, then a footer carrying the real LLM spend Pi reported
+// (model, cost, token split) so a reviewer sees what the run cost.
+export function prBody(summary: string, usage: PrUsage): string {
+  if (typeof summary !== "string" || summary.trim() === "") throw new Error("[githubKinds.prBody] summary is required");
+  return `${summary.trim()}\n\n${usageFooter(usage)}`;
+}
+
+function usageFooter(usage: PrUsage): string {
+  const tokens = `${tokenCount(usage.inputTokens)} in / ${tokenCount(usage.outputTokens)} out tokens`;
+  return `---\n🤖 Strappy · ${usage.model}\nLLM cost: ${money(usage.cost)} · ${tokens}`;
+}
+
+function money(cost: number): string {
+  if (!Number.isFinite(cost)) throw new Error("[githubKinds.money] cost must be a number");
+  return `$${cost.toFixed(4)}`;
+}
+
+function tokenCount(tokens: number): string {
+  if (!Number.isInteger(tokens)) throw new Error("[githubKinds.tokenCount] tokens must be an integer");
+  return tokens.toLocaleString("en-US");
 }
 
 async function commentIssue(deps: GitHubKindDeps, ctx: StepContext): Promise<StepValues> {

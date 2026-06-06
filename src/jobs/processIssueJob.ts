@@ -30,8 +30,9 @@ function step(
 
 // Implementation flow: fetch the issue, clone the repo, branch, run the LLM
 // implementation step (it edits the clone and returns a commit message + PR
-// summary), then commit/push, open a PR from the model's summary, comment the PR
-// number back, and close the issue. Each step reads only ambient trigger
+// title + PR summary, and Pi's reported model/cost/tokens are derived alongside),
+// then commit/push, open a PR from the model's title + summary (with an LLM-cost
+// footer), comment the PR number back, and close the issue. Each step reads only ambient trigger
 // constants, its own static prompt, or the immediately preceding step's outputs;
 // a value needed by a later step is carried forward as a "pass" input+output so
 // the data flow is explicit and strictly enforced (validateJobGraph + scheduler).
@@ -69,8 +70,12 @@ export function processIssueJob(): Job {
           io("baseBranch", "string", "pass", "Carried to the open-PR step"),
           io("newBranch", "string", "pass", "Carried to the commit/push + open-PR steps")],
         [io("commitMessage", "string", "step", "Git commit message for the changes the model made"),
+          io("pullRequestTitle", "string", "step", "Concise PR title describing the change the model made"),
           io("pullRequestSummary", "string", "step", "Markdown summary of the changes, used as the PR body"),
           io("cost", "number", "step", "LLM spend for this step, reported by Pi"),
+          io("model", "string", "step", "Model id Pi ran this step against (PR footer)"),
+          io("inputTokens", "integer", "step", "Prompt tokens Pi reported (PR footer)"),
+          io("outputTokens", "integer", "step", "Completion tokens Pi reported (PR footer)"),
           io("workingDirectory", "string", "pass", "Local clone path"),
           io("baseBranch", "string", "pass", "Carried to the open-PR step"),
           io("newBranch", "string", "pass", "Carried to the commit/push + open-PR steps")],
@@ -81,16 +86,31 @@ export function processIssueJob(): Job {
           io("newBranch", "string", "pass", "Branch to push, carried to the open-PR step"),
           io("commitMessage", "string", "step", "Commit message from the implement step"),
           io("baseBranch", "string", "pass", "Carried to the open-PR step"),
-          io("pullRequestSummary", "string", "pass", "Carried to the open-PR step")],
+          io("pullRequestTitle", "string", "pass", "Carried to the open-PR step"),
+          io("pullRequestSummary", "string", "pass", "Carried to the open-PR step"),
+          io("cost", "number", "pass", "Carried to the open-PR step (PR footer)"),
+          io("model", "string", "pass", "Carried to the open-PR step (PR footer)"),
+          io("inputTokens", "integer", "pass", "Carried to the open-PR step (PR footer)"),
+          io("outputTokens", "integer", "pass", "Carried to the open-PR step (PR footer)")],
         [io("pushed", "boolean", "receipt", "Terminal: the branch was pushed"),
           io("newBranch", "string", "pass", "Carried to the open-PR step"),
           io("baseBranch", "string", "pass", "Carried to the open-PR step"),
-          io("pullRequestSummary", "string", "pass", "Carried to the open-PR step")]),
+          io("pullRequestTitle", "string", "pass", "Carried to the open-PR step"),
+          io("pullRequestSummary", "string", "pass", "Carried to the open-PR step"),
+          io("cost", "number", "pass", "Carried to the open-PR step (PR footer)"),
+          io("model", "string", "pass", "Carried to the open-PR step (PR footer)"),
+          io("inputTokens", "integer", "pass", "Carried to the open-PR step (PR footer)"),
+          io("outputTokens", "integer", "pass", "Carried to the open-PR step (PR footer)")]),
       step("open-pr", "github.openPullRequest", "Open Pull Request",
-        "Open a PR from the branch into the default branch using the model's summary as the body.",
+        "Open a PR from the branch into the default branch: the model's title (prefixed + issue-linked) and its summary plus an LLM-cost footer as the body.",
         [io("repo", "string", "trigger", "owner/name"), io("issueNumber", "number", "trigger", "Issue number"),
           io("newBranch", "string", "step", "Head branch"), io("baseBranch", "string", "step", "Base branch"),
-          io("pullRequestSummary", "string", "step", "PR body from the implement step")],
+          io("pullRequestTitle", "string", "step", "PR title from the implement step"),
+          io("pullRequestSummary", "string", "step", "PR body from the implement step"),
+          io("cost", "number", "step", "LLM spend, rendered into the PR body footer"),
+          io("model", "string", "step", "Model id, rendered into the PR body footer"),
+          io("inputTokens", "integer", "step", "Prompt tokens, rendered into the PR body footer"),
+          io("outputTokens", "integer", "step", "Completion tokens, rendered into the PR body footer")],
         [io("prNumber", "number", "step", "Created PR number"), io("prUrl", "string", "step", "PR URL")]),
       step("comment-issue", "github.commentIssue", "Comment PR Number",
         "Comment the PR number back on the issue.",

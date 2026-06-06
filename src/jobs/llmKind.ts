@@ -13,10 +13,15 @@ type RunStructured = (
 ) => Promise<StructuredResult>;
 
 // Outputs the harness fills from the recorded execution rather than asking the
-// model for them: keyed by output name -> value read off the LlmExecution. `cost`
-// is the spend Pi reports, which the model cannot know.
+// model for them: keyed by output name -> value read off the LlmExecution. These
+// are the provider's reported facts (model id, spend, token split) the model
+// cannot know about its own call; a step opts in by declaring an output of the
+// matching key.
 const DERIVED_OUTPUTS: Record<string, (execution: LlmExecution) => unknown> = {
   cost: (execution) => execution.usage.costTotal,
+  model: (execution) => execution.model,
+  inputTokens: (execution) => execution.usage.inputTokens,
+  outputTokens: (execution) => execution.usage.outputTokens,
 };
 
 // LLM-backed step kind: prompts the model with the step's "userPrompt" input
