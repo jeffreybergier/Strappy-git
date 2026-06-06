@@ -21,7 +21,10 @@
       .io-src-trigger { background: #d9edf7; color: #31708f; }
       .io-src-static { background: #fcf8e3; color: #8a6d3b; }
       .io-src-pass { background: #f5f5f5; color: #999; border: 1px solid #e3e3e3; }
+      .io-src-derived { background: #e8e0f5; color: #6f5499; }
       .io-src-receipt { background: #dff0d8; color: #3c763d; }
+      .io-src-guided { background: #cdeeeb; color: #27796f; }
+      .io-src[title] { cursor: help; }
       .trigger-card { flex: 0 1 200px; min-width: 180px; }
       .trigger-card .panel-heading { background-color: #d9edf7; }
       .runs-table { table-layout: fixed; }
@@ -85,13 +88,13 @@
                     <div class="io-label">Inputs</div>
                     <ul class="io-list">
                       <% step.inputs.forEach(function (io) { %>
-                        <li><%= io.key %> <span class="io-type">:<%= io.type %></span><% if (io.source && io.source !== "step") { %> <span class="io-src io-src-<%= io.source %>"><%= io.source %></span><% } %></li>
+                        <li><%= io.key %> <span class="io-type">:<%= io.type %></span><% if (io.source && io.source !== "step") { %> <span class="io-src io-src-<%= io.source %>"<% if (io.source === "static" && step.systemPrompt) { %> title="<%= step.systemPrompt %>"<% } %>><%= io.source %></span><% } %></li>
                       <% }); %>
                     </ul>
                     <div class="io-label">Outputs</div>
                     <ul class="io-list">
                       <% step.outputs.forEach(function (io) { %>
-                        <li><%= io.key %> <span class="io-type">:<%= io.type %></span><% if (io.source && io.source !== "step") { %> <span class="io-src io-src-<%= io.source %>"><%= io.source %></span><% } %></li>
+                        <li><%= io.key %> <span class="io-type">:<%= io.type %></span><% if (io.source && io.source !== "step") { %> <span class="io-src io-src-<%= io.source %>"><%= io.source %></span><% } %><% if (io.guidance) { %> <span class="io-src io-src-guided" title="<%= io.guidance %>">guided</span><% } %></li>
                       <% }); %>
                     </ul>
                   </div>

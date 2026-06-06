@@ -126,15 +126,19 @@ function hydrateStep(db: DatabaseSync, jobId: string, row: Row): ProcessStep {
 function readIO(db: DatabaseSync, jobId: string, stepId: string, direction: IODirection): StepIO[] {
   return db
     .prepare(
-      "SELECT key, type, source, description FROM step_io WHERE job_id = ? AND step_id = ? AND direction = ? ORDER BY position",
+      "SELECT key, type, source, description, guidance FROM step_io WHERE job_id = ? AND step_id = ? AND direction = ? ORDER BY position",
     )
     .all(jobId, stepId, direction)
-    .map((r) => ({
-      key: text(r, "key"),
-      type: asIoType(text(r, "type")),
-      source: asIoSource(text(r, "source")),
-      description: text(r, "description"),
-    }));
+    .map((r) => {
+      const guidance = textOrUndefined(r, "guidance");
+      return {
+        key: text(r, "key"),
+        type: asIoType(text(r, "type")),
+        source: asIoSource(text(r, "source")),
+        description: text(r, "description"),
+        ...(guidance !== undefined && { guidance }),
+      };
+    });
 }
 
 function hydrateRun(db: DatabaseSync, row: Row): JobRun {
@@ -265,8 +269,8 @@ function insertStep(db: DatabaseSync, jobId: string, step: ProcessStep, position
 
 function insertIO(db: DatabaseSync, jobId: string, stepId: string, direction: IODirection, io: StepIO, position: number): void {
   db.prepare(
-    "INSERT INTO step_io (job_id, step_id, direction, position, key, type, source, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-  ).run(jobId, stepId, direction, position, io.key, io.type, io.source, io.description);
+    "INSERT INTO step_io (job_id, step_id, direction, position, key, type, source, description, guidance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run(jobId, stepId, direction, position, io.key, io.type, io.source, io.description, io.guidance ?? null);
 }
 
 export function insertRun(db: DatabaseSync, run: JobRun): void {

@@ -16,11 +16,7 @@ so be precise and only emit what is asked for.
 
 # Output
 
-Respond with the result only. Do not greet, apologize, or add commentary
-outside the requested fields. Do not invent details that are not in the issue.
-
-- `commitMessage`: a conventional, imperative git commit message.
-- `pullRequestTitle`: a short imperative title describing the change you made
-  (e.g. "Add retry logic to the HTTP client"). Do not include the issue number —
-  it is appended for you. Keep it under ~70 characters.
-- `pullRequestSummary`: a markdown summary of the change, used as the PR body.
+Report your result by calling the submit tool. Each field's description tells
+you exactly what it expects — follow it. Do not greet, apologize, or add
+commentary outside the requested fields, and do not invent details that are not
+in the issue.

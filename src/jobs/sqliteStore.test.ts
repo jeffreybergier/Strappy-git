@@ -160,6 +160,32 @@ test("saveJob + getJob round-trips a step's authored systemPrompt", () => {
   assert.deepEqual(store.getJob("triage"), job);
 });
 
+test("saveJob + getJob round-trips output guidance and a derived source", () => {
+  const db = openDatabase(":memory:");
+  const store = new SqliteJobStore(db);
+  const job: Job = {
+    id: "implement",
+    name: "Implement",
+    description: "Implement and report.",
+    trigger: "github.issue.opened",
+    steps: [
+      {
+        id: "implement-issue",
+        kind: "llm",
+        name: "Implement Issue",
+        description: "Make the change and report.",
+        inputs: [{ key: "userPrompt", type: "string", source: "step", description: "issue text" }],
+        outputs: [
+          { key: "commitMessage", type: "string", source: "step", description: "commit msg", guidance: "An imperative commit message." },
+          { key: "cost", type: "number", source: "derived", description: "LLM spend" },
+        ],
+      },
+    ],
+  };
+  store.saveJob(job);
+  assert.deepEqual(store.getJob("implement"), job);
+});
+
 test("recordRun + listRuns round-trips an execution", () => {
   const db = openDatabase(":memory:");
   const store = new SqliteJobStore(db);

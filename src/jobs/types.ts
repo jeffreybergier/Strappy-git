@@ -10,10 +10,18 @@ export type RunStatus = "queued" | "running" | "succeeded" | "failed";
 export interface StepIO {
   key: string;
   type: IoType;
-  // Where the value is sourced from. On inputs: any IoSource. On outputs: only
-  // "step" (freshly produced) or "pass" (carried through unchanged).
+  // Where the value is sourced from. On inputs: any IoSource. On outputs:
+  // "step" (the executor/model produces it), "derived" (the harness fills it
+  // from the recorded execution), "pass" (carried through unchanged), or
+  // "receipt" (a terminal side-effect).
   source: IoSource;
+  // Human-facing label (dashboard, docs).
   description: string;
+  // Model-facing instruction for an LLM-authored ("step") output: the submit
+  // tool's schema uses this verbatim (falling back to `description`), so the
+  // output contract carries the prompt guidance — imperative voice, examples,
+  // length/format limits — that helps the model produce a good value.
+  guidance?: string;
 }
 
 export interface ProcessStep {

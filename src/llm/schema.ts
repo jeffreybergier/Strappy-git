@@ -16,9 +16,10 @@ export function outputsToSchema(outputs: StepIO[]): TObject {
 
 // Map each StepIO.type in the closed IoType vocabulary to its typebox schema;
 // the default is defensive (a cast could still smuggle in an unknown type). The
-// description is passed through so the model sees per-field intent.
+// model-facing `guidance` is passed through as the field description (falling
+// back to the human `description`) so the model sees per-field intent.
 function ioToSchema(io: StepIO): TSchema {
-  const options = { description: io.description };
+  const options = { description: io.guidance ?? io.description };
   switch (io.type) {
     case "number": return Type.Number(options);
     case "integer": return Type.Integer(options);

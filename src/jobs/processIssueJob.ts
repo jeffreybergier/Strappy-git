@@ -3,8 +3,8 @@ import type { IoSource, IoType } from "./io.js";
 import { loadPrompt } from "./prompts.js";
 import { validateJobGraph } from "./validateJobGraph.js";
 
-function io(key: string, type: IoType, source: IoSource, description: string): StepIO {
-  return { key, type, source, description };
+function io(key: string, type: IoType, source: IoSource, description: string, guidance?: string): StepIO {
+  return { key, type, source, description, ...(guidance !== undefined && { guidance }) };
 }
 
 // The values the poller seeds onto the run for a github.issue.opened trigger
@@ -69,13 +69,16 @@ export function processIssueJob(): Job {
           io("workingDirectory", "string", "pass", "Local clone path the model explores and edits"),
           io("baseBranch", "string", "pass", "Carried to the open-PR step"),
           io("newBranch", "string", "pass", "Carried to the commit/push + open-PR steps")],
-        [io("commitMessage", "string", "step", "Git commit message for the changes the model made"),
-          io("pullRequestTitle", "string", "step", "Concise PR title describing the change the model made"),
-          io("pullRequestSummary", "string", "step", "Markdown summary of the changes, used as the PR body"),
-          io("cost", "number", "step", "LLM spend for this step, reported by Pi"),
-          io("model", "string", "step", "Model id Pi ran this step against (PR footer)"),
-          io("inputTokens", "integer", "step", "Prompt tokens Pi reported (PR footer)"),
-          io("outputTokens", "integer", "step", "Completion tokens Pi reported (PR footer)"),
+        [io("commitMessage", "string", "step", "Git commit message for the changes the model made",
+            "A conventional, imperative git commit message summarizing the change you made (e.g. \"Add retry logic to the HTTP client\")."),
+          io("pullRequestTitle", "string", "step", "Concise PR title describing the change the model made",
+            "A short imperative title describing the change you made (e.g. \"Add retry logic to the HTTP client\"). Do not include the issue number — it is appended for you. Keep it under ~70 characters."),
+          io("pullRequestSummary", "string", "step", "Markdown summary of the changes, used as the PR body",
+            "A markdown summary of what changed and why, used verbatim as the PR body. Do not invent details that are not in the issue."),
+          io("cost", "number", "derived", "LLM spend for this step, reported by Pi"),
+          io("model", "string", "derived", "Model id Pi ran this step against (PR footer)"),
+          io("inputTokens", "integer", "derived", "Prompt tokens Pi reported (PR footer)"),
+          io("outputTokens", "integer", "derived", "Completion tokens Pi reported (PR footer)"),
           io("workingDirectory", "string", "pass", "Local clone path"),
           io("baseBranch", "string", "pass", "Carried to the open-PR step"),
           io("newBranch", "string", "pass", "Carried to the commit/push + open-PR steps")],

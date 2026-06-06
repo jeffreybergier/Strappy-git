@@ -54,13 +54,14 @@ function checkStatic(step: ProcessStep, input: StepIO): void {
 // output must mirror a "pass" input of the same key and type; a "receipt" output
 // is a terminal side-effect, kept OUT of the producer scope so nothing downstream
 // can read it (a consumer of one fails as "no producer"); any other output must
-// be freshly produced ("step").
+// be freshly produced — by the executor/model ("step") or by the harness from the
+// recorded execution ("derived"). Both kinds enter the producer scope.
 function checkOutputs(step: ProcessStep, inputsByKey: Map<string, StepIO>): Map<string, IoType> {
   const produced = new Map<string, IoType>();
   for (const output of step.outputs) {
     if (output.source === "pass") checkPass(step, output, inputsByKey);
-    else if (output.source !== "step" && output.source !== "receipt") {
-      throw new Error(`[validateJobGraph] step "${step.id}" output "${output.key}" must have source "step", "pass", or "receipt"`);
+    else if (output.source !== "step" && output.source !== "derived" && output.source !== "receipt") {
+      throw new Error(`[validateJobGraph] step "${step.id}" output "${output.key}" must have source "step", "derived", "pass", or "receipt"`);
     }
     if (output.source !== "receipt") produced.set(output.key, output.type);
   }

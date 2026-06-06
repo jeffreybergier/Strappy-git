@@ -12,11 +12,10 @@ type RunStructured = (
   cwd: string,
 ) => Promise<StructuredResult>;
 
-// Outputs the harness fills from the recorded execution rather than asking the
-// model for them: keyed by output name -> value read off the LlmExecution. These
-// are the provider's reported facts (model id, spend, token split) the model
-// cannot know about its own call; a step opts in by declaring an output of the
-// matching key.
+// How to fill each harness-derived output from the recorded execution: keyed by
+// output name -> value read off the LlmExecution. These are the provider's
+// reported facts (model id, spend, token split) the model cannot know about its
+// own call; a step opts in by declaring the output with source "derived".
 const DERIVED_OUTPUTS: Record<string, (execution: LlmExecution) => unknown> = {
   cost: (execution) => execution.usage.costTotal,
   model: (execution) => execution.model,
@@ -46,18 +45,22 @@ export function llmStepKind(run: RunStructured = runStructured): StepExecutor {
   };
 }
 
-// The model fills only the outputs it authors: harness-derived outputs (filled
-// from the execution) and "pass" outputs (carried through by the scheduler) are
-// excluded from the submit tool's schema.
+// The model fills only the outputs it authors, declared with source "step".
+// "derived" outputs (filled from the execution) and "pass" outputs (carried
+// through by the scheduler) are excluded from the submit tool's schema.
 function modelOutputs(outputs: StepIO[]): StepIO[] {
-  return outputs.filter((io) => io.source !== "pass" && !(io.key in DERIVED_OUTPUTS));
+  return outputs.filter((io) => io.source === "step");
 }
 
+// Strict: a "derived" output whose key has no deriver is a contract error (the
+// step asked the harness for a fact it cannot produce), surfaced at run time.
 function derivedOutputs(outputs: StepIO[], execution: LlmExecution): StepValues {
   const values: StepValues = {};
   for (const io of outputs) {
+    if (io.source !== "derived") continue;
     const derive = DERIVED_OUTPUTS[io.key];
-    if (derive) values[io.key] = derive(execution);
+    if (derive === undefined) throw new Error(`[llmStepKind] no deriver for derived output "${io.key}"`);
+    values[io.key] = derive(execution);
   }
   return values;
 }

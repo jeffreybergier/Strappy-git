@@ -18,10 +18,13 @@ export function asIoType(value: unknown): IoType {
 // step (e.g. a systemPrompt); "step" is produced by / consumed from the
 // immediately preceding step; "pass" is a value carried through a step unchanged
 // (declared as both an input and an output) so a later step can still read it.
-// "receipt" is an output-only terminal: a produced side-effect acknowledgement
-// (e.g. "pushed", "closed") deliberately consumed by no later step, so the graph
-// verifier treats it as an intended endpoint rather than dangling waste.
-export const IO_SOURCES = ["trigger", "static", "step", "pass", "receipt"] as const;
+// "derived" is an output-only fact the harness fills from the step's recorded
+// execution (an LLM call's model id, spend, token split) — never asked of the
+// model, but it feeds later steps like a "step" output. "receipt" is an
+// output-only terminal: a produced side-effect acknowledgement (e.g. "pushed",
+// "closed") deliberately consumed by no later step, so the graph verifier treats
+// it as an intended endpoint rather than dangling waste.
+export const IO_SOURCES = ["trigger", "static", "step", "pass", "derived", "receipt"] as const;
 export type IoSource = (typeof IO_SOURCES)[number];
 
 export function isIoSource(value: unknown): value is IoSource {

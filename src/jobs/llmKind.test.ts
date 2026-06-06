@@ -20,6 +20,8 @@ function result(values: Record<string, unknown>): StructuredResult {
   return { values, execution: execution() };
 }
 
+const DERIVED_KEYS = new Set(["cost", "model", "inputTokens", "outputTokens"]);
+
 function step(outputs: string[]): ProcessStep {
   return {
     id: "ask",
@@ -30,7 +32,7 @@ function step(outputs: string[]): ProcessStep {
     outputs: outputs.map((key) => ({
       key,
       type: key === "cost" ? "number" : "string",
-      source: "step",
+      source: DERIVED_KEYS.has(key) ? "derived" : "step",
       description: "",
     })),
   };
@@ -97,6 +99,25 @@ test("llmStepKind derives model and token counts from the execution, keeping the
   assert.equal(outputs.model, "m");
   assert.equal(outputs.inputTokens, 10);
   assert.equal(outputs.outputTokens, 5);
+});
+
+test("llmStepKind throws when a derived output has no known deriver", async () => {
+  const kind = llmStepKind(async () => result({ commitMessage: "m" }));
+  const bad: ProcessStep = {
+    id: "ask",
+    kind: "llm",
+    name: "Ask",
+    description: "",
+    inputs: [{ key: "userPrompt", type: "string", source: "step", description: "" }],
+    outputs: [
+      { key: "commitMessage", type: "string", source: "step", description: "" },
+      { key: "latency", type: "number", source: "derived", description: "" },
+    ],
+  };
+  await assert.rejects(
+    async () => { await kind({ step: bad, inputs: { userPrompt: "go", workingDirectory: "/tmp/r" } }); },
+    /no deriver for derived output "latency"/,
+  );
 });
 
 test("llmStepKind passes undefined systemPrompt when the step has no systemPrompt input", async () => {

@@ -70,9 +70,17 @@ test("a pass output without a matching pass input is rejected", () => {
   assert.throws(() => validateJobGraph(graph, []), /pass output "token" needs a matching pass input/);
 });
 
-test("an output declared with a non-step\/pass\/receipt source is rejected", () => {
+test("an output declared with a non-step\/derived\/pass\/receipt source is rejected", () => {
   const graph = job([step("a", [], [io("token", "string", "trigger")])]);
-  assert.throws(() => validateJobGraph(graph, []), /output "token" must have source "step", "pass", or "receipt"/);
+  assert.throws(() => validateJobGraph(graph, []), /output "token" must have source "step", "derived", "pass", or "receipt"/);
+});
+
+test("a derived output is produced by the step and satisfies a later step's input", () => {
+  const graph = job([
+    step("a", [], [io("cost", "number", "derived")]),
+    step("b", [io("cost", "number", "step")], []),
+  ]);
+  assert.doesNotThrow(() => validateJobGraph(graph, []));
 });
 
 test("a receipt output is an intentional terminal: it validates and is never flagged", () => {

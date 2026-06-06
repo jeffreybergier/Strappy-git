@@ -38,6 +38,18 @@ test("outputsToSchema maps known StepIO types and passes descriptions through", 
   assert.equal(prop(schema, "s").description, "desc for s");
 });
 
+test("outputsToSchema prefers model-facing guidance over the human description", () => {
+  const withGuidance: StepIO = {
+    key: "pullRequestTitle",
+    type: "string",
+    source: "step",
+    description: "Concise PR title describing the change the model made",
+    guidance: "A short imperative title. Keep under ~70 chars.",
+  };
+  const schema = outputsToSchema([withGuidance]);
+  assert.equal(prop(schema, "pullRequestTitle").description, "A short imperative title. Keep under ~70 chars.");
+});
+
 test("outputsToSchema falls back to string for unknown types", () => {
   const schema = outputsToSchema([io("weird", "some-custom-type")]);
   assert.equal(prop(schema, "weird").type, "string");
