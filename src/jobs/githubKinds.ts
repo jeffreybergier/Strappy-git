@@ -1,7 +1,7 @@
-import fs from "node:fs/promises";
 import path from "node:path";
 import { StepKindRegistry } from "./stepKinds.js";
 import type { StepContext, StepValues } from "./stepKinds.js";
+import { llmStepKind } from "./llmKind.js";
 import type { GitHubClient } from "../github/client.js";
 import * as git from "../github/git.js";
 
@@ -13,15 +13,17 @@ export interface GitHubKindDeps {
 }
 
 // Live registry for processIssueJob: the same kind keys defaultStepKinds() stubs,
-// but each backed by a real git/GitHub action. Inputs are read off ctx (threaded
-// by the scheduler); outputs feed the next step.
+// but each backed by a real git/GitHub/LLM action. Inputs are read off ctx
+// (threaded by the scheduler); outputs feed the next step. The PR-flow kinds
+// (createBranch/commitPush/...) stay registered for the follow-up even though the
+// implement-only job does not reference them yet.
 export function githubStepKinds(deps: GitHubKindDeps): StepKindRegistry {
   validateDeps(deps);
   return new StepKindRegistry()
     .register("github.fetchIssue", (ctx) => fetchIssue(deps, ctx))
     .register("git.cloneRepo", (ctx) => cloneRepo(deps, ctx))
     .register("git.createBranch", (ctx) => createBranch(ctx))
-    .register("agent.applyChange", (ctx) => applyChange(ctx))
+    .register("llm", llmStepKind())
     .register("git.commitPush", (ctx) => commitPush(deps, ctx))
     .register("github.openPullRequest", (ctx) => openPullRequest(deps, ctx))
     .register("github.commentIssue", (ctx) => commentIssue(deps, ctx))
@@ -30,7 +32,13 @@ export function githubStepKinds(deps: GitHubKindDeps): StepKindRegistry {
 
 async function fetchIssue(deps: GitHubKindDeps, ctx: StepContext): Promise<StepValues> {
   const issue = await deps.client.getIssue(str(ctx.inputs, "repo"), num(ctx.inputs, "issueNumber"));
-  return { issueTitle: issue.title, issueBody: issue.body };
+  return { issueTitle: issue.title, issueBody: issue.body, prompt: buildPrompt(issue.title, issue.body) };
+}
+
+// Renders the fetched issue into the user message the implement step prompts with.
+function buildPrompt(title: string, body: string): string {
+  const trimmed = body.trim();
+  return trimmed === "" ? `Title: ${title}` : `Title: ${title}\n\n${trimmed}`;
 }
 
 async function cloneRepo(deps: GitHubKindDeps, ctx: StepContext): Promise<StepValues> {
@@ -47,19 +55,10 @@ async function createBranch(ctx: StepContext): Promise<StepValues> {
   return { branch };
 }
 
-// Placeholder for the future LLM step: just touches an empty file so there is a
-// change to commit. Swap this executor for one that calls runPrompt() later.
-async function applyChange(ctx: StepContext): Promise<StepValues> {
-  const n = num(ctx.inputs, "issueNumber");
-  const changedPath = path.join(str(ctx.inputs, "workdir"), `STRAPPY-ISSUE-${n}.md`);
-  await fs.writeFile(changedPath, "");
-  return { changedPath };
-}
-
 async function commitPush(deps: GitHubKindDeps, ctx: StepContext): Promise<StepValues> {
   const workdir = str(ctx.inputs, "workdir");
   const branch = str(ctx.inputs, "branch");
-  await git.commitAll(workdir, `strappy: prepare ${branch}`, deps.committer);
+  await git.commitAll(workdir, str(ctx.inputs, "commitMessage"), deps.committer);
   await git.pushBranch(workdir, branch, deps.token);
   return { pushed: true };
 }
@@ -71,7 +70,7 @@ async function openPullRequest(deps: GitHubKindDeps, ctx: StepContext): Promise<
     head: str(ctx.inputs, "branch"),
     base: str(ctx.inputs, "baseBranch"),
     title: `Strappy: issue #${n}`,
-    body: `Automated PR opened by Strappy for #${n}.`,
+    body: str(ctx.inputs, "prSummary"),
   });
   return { prNumber: pr.number, prUrl: pr.url };
 }

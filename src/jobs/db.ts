@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { createLogger } from "../logger.js";
-import { applySchema } from "./schema.js";
+import { applySchema, SCHEMA_VERSION } from "./schema.js";
 import type {
   Job,
   JobRun,
@@ -31,9 +31,46 @@ export function openDatabase(dbPath: string): DatabaseSync {
   const db = new DatabaseSync(dbPath);
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA foreign_keys = ON;");
+  migrateSchema(db);
   applySchema(db);
   log.info("openDatabase", `opened sqlite database at ${dbPath}`);
   return db;
+}
+
+// Self-heals a stale on-disk schema so a fossil DB reseeds instead of crashing.
+// Pre-versioning files left user_version = 0 with our tables already created;
+// their shape predates current columns (e.g. system_prompt), so a read throws
+// "no such column". We drop those tables, applySchema() recreates the current
+// shape, and the now-empty DB re-seeds. Dropping is safe: the data dir is
+// disposable (the documented "delete the file to regenerate" recovery).
+function migrateSchema(db: DatabaseSync): void {
+  const version = userVersion(db);
+  if (version === SCHEMA_VERSION) return;
+  if (version === 0 && hasTable(db, "jobs")) {
+    log.warn("migrateSchema", `legacy schema (user_version 0) found; rebuilding disposable db`);
+    dropAllTables(db);
+  }
+  db.exec(`PRAGMA user_version = ${SCHEMA_VERSION};`);
+}
+
+function userVersion(db: DatabaseSync): number {
+  const row = db.prepare("PRAGMA user_version").get() as Row | undefined;
+  const v = row?.["user_version"];
+  if (typeof v !== "number" || !Number.isInteger(v)) {
+    throw new Error("[Db.userVersion] user_version is not an integer");
+  }
+  return v;
+}
+
+function hasTable(db: DatabaseSync, name: string): boolean {
+  return db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined;
+}
+
+function dropAllTables(db: DatabaseSync): void {
+  db.exec("PRAGMA foreign_keys = OFF;");
+  const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all();
+  for (const t of tables) db.exec(`DROP TABLE IF EXISTS "${text(t as Row, "name")}"`);
+  db.exec("PRAGMA foreign_keys = ON;");
 }
 
 // ---- reads ------------------------------------------------------------------
@@ -167,6 +204,41 @@ export function insertJob(db: DatabaseSync, job: Job): void {
     job.trigger,
   );
   job.steps.forEach((step, position) => insertStep(db, job.id, step, position));
+}
+
+// Re-applies canonical (code-defined) job definitions so the dashboard tracks the
+// code even when the DB was seeded with an older shape. Call on boot after
+// seedDatabase; unlike seeding, it does not skip a populated DB.
+export function syncJobs(db: DatabaseSync, jobs: Job[]): void {
+  if (!Array.isArray(jobs)) throw new Error("[Db.syncJobs] jobs must be an array");
+  jobs.forEach((job) => upsertJob(db, job));
+  log.info("syncJobs", `synced ${jobs.length} job definition(s)`);
+}
+
+// Upserts one job: the jobs row is updated in place (never deleted, so cascading
+// job_runs survive) and its steps + io are replaced wholesale.
+export function upsertJob(db: DatabaseSync, job: Job): void {
+  validateJob(job);
+  transaction(db, () => {
+    const exists = db.prepare("SELECT 1 FROM jobs WHERE id = ?").get(job.id) !== undefined;
+    if (exists) {
+      db.prepare("UPDATE jobs SET name = ?, description = ?, trigger = ? WHERE id = ?").run(
+        job.name,
+        job.description,
+        job.trigger,
+        job.id,
+      );
+      db.prepare("DELETE FROM process_steps WHERE job_id = ?").run(job.id); // cascades step_io
+    } else {
+      db.prepare("INSERT INTO jobs (id, name, description, trigger) VALUES (?, ?, ?, ?)").run(
+        job.id,
+        job.name,
+        job.description,
+        job.trigger,
+      );
+    }
+    job.steps.forEach((step, position) => insertStep(db, job.id, step, position));
+  });
 }
 
 function insertStep(db: DatabaseSync, jobId: string, step: ProcessStep, position: number): void {

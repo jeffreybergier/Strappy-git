@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { loadPrompt } from "./prompts.js";
 
 test("loadPrompt reads a step prompt from prompts/<name>.md", () => {
-  const text = loadPrompt("triage-issue");
-  assert.match(text, /triage/i);
+  const text = loadPrompt("implement-issue");
+  assert.match(text, /implementation/i);
   assert.equal(text, text.trim());
 });
 

@@ -4,7 +4,7 @@ import express from "express";
 import { config } from "./config.js";
 import { createLogger } from "./logger.js";
 import type { JobReadStore } from "./jobs/store.js";
-import { openDatabase, seedDatabase } from "./jobs/db.js";
+import { openDatabase, seedDatabase, syncJobs } from "./jobs/db.js";
 import { SqliteJobStore } from "./jobs/sqliteStore.js";
 import { seedJobs, seedRuns } from "./jobs/seed.js";
 import { dashboardRouter } from "./routes/dashboard.js";
@@ -19,6 +19,7 @@ const log = createLogger("Server");
 function openStore(): SqliteJobStore {
   const db = openDatabase(config.dbPath);
   seedDatabase(db, seedJobs(), seedRuns());
+  syncJobs(db, seedJobs()); // keep persisted job definitions in step with the code
   return new SqliteJobStore(db);
 }
 

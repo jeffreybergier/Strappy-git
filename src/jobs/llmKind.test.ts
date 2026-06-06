@@ -57,12 +57,12 @@ test("llmStepKind derives a schema from outputs, records the execution, and emit
     return result({ category: "bug", difficulty: 2, rationale: "looks like a crash" });
   });
   const outputs = await kind(
-    ctx({ prompt: "the issue", workdir: "/tmp/jobs/uuid" }, ["category", "difficulty", "rationale"], (e) => { recorded = e; }, "You are triage."),
+    ctx({ prompt: "the issue", workdir: "/tmp/jobs/uuid" }, ["category", "difficulty", "rationale"], (e) => { recorded = e; }, "You are implementation."),
   );
   assert.deepEqual(outputs, { category: "bug", difficulty: 2, rationale: "looks like a crash" });
   assert.deepEqual(recorded, execution());
   assert.equal(seenPrompt, "the issue");
-  assert.equal(seenSystem, "You are triage.");
+  assert.equal(seenSystem, "You are implementation.");
   assert.equal(seenTool, "submit_ask");
   assert.equal(seenCwd, "/tmp/jobs/uuid");
   assert.deepEqual(seenKeys, ["category", "difficulty", "rationale"]);
@@ -85,7 +85,7 @@ test("llmStepKind sanitizes the step id into an identifier-safe tool name", asyn
     return result({ out: "x" });
   });
   const dashed: ProcessStep = {
-    id: "triage-issue",
+    id: "implement-issue",
     kind: "llm",
     name: "T",
     description: "",
@@ -93,7 +93,7 @@ test("llmStepKind sanitizes the step id into an identifier-safe tool name", asyn
     outputs: [{ key: "out", type: "string", description: "" }],
   };
   await kind({ step: dashed, inputs: { prompt: "hi", workdir: "/tmp/r" } });
-  assert.equal(seenTool, "submit_triage_issue");
+  assert.equal(seenTool, "submit_implement_issue");
 });
 
 test("llmStepKind requires a non-empty prompt input", async () => {

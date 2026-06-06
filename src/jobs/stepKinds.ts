@@ -73,7 +73,6 @@ export function defaultStepKinds(): StepKindRegistry {
     .register("github.postReview", stubExecutor)
     .register("git.cloneRepo", stubExecutor)
     .register("git.createBranch", stubExecutor)
-    .register("agent.applyChange", stubExecutor)
     .register("git.commitPush", stubExecutor)
     .register("github.openPullRequest", stubExecutor)
     .register("github.commentIssue", stubExecutor)

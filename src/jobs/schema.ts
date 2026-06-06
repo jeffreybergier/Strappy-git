@@ -1,5 +1,10 @@
 import { DatabaseSync } from "node:sqlite";
 
+// Bump whenever SCHEMA_SQL changes shape. openDatabase() rebuilds an on-disk DB
+// stamped with an older version, so a stale file self-heals instead of crashing
+// on a column it predates (the data dir is disposable by design).
+export const SCHEMA_VERSION = 1;
+
 // Relational mirror of the ISO 9001 process-map model in types.ts.
 // process_steps keep `position` so ordered steps survive a round-trip;
 // step_io folds inputs + outputs into one table via the `direction` column.

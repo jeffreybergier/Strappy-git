@@ -1,47 +1,62 @@
 import type { Job, ProcessStep, StepIO } from "./types.js";
+import { loadPrompt } from "./prompts.js";
 
 function io(key: string, type: string, description: string): StepIO {
   return { key, type, description };
 }
 
-function step(id: string, kind: string, name: string, description: string, inputs: StepIO[], outputs: StepIO[]): ProcessStep {
-  return { id, kind, name, description, inputs, outputs };
+function step(
+  id: string, kind: string, name: string, description: string,
+  inputs: StepIO[], outputs: StepIO[], systemPrompt?: string,
+): ProcessStep {
+  return { id, kind, name, description, ...(systemPrompt !== undefined && { systemPrompt }), inputs, outputs };
 }
 
-// The no-AI end-to-end flow: fetch the issue, clone, branch, touch a placeholder
-// file (the seam the LLM will fill later), push, open a PR, comment the PR
-// number back, and close the issue. Each step's outputs feed the next's inputs.
+// Implementation flow: fetch the issue, clone the repo, branch, run the LLM
+// implementation step (it edits the clone and returns a commit message + PR
+// summary alongside the triage fields), then commit/push the changes, open a PR
+// from the model's summary, comment the PR number back, and close the issue.
+// Each step's outputs feed the next's inputs.
 export function processIssueJob(): Job {
   return {
     id: "process-issue",
     name: "Process New Issue",
-    description: "Open a PR from a fresh branch in response to a whitelisted user's issue (no AI yet).",
+    description: "Implement a whitelisted user's new issue with the LLM and open a PR with the changes.",
     trigger: "github.issue.opened",
     steps: [
       step("fetch-issue", "github.fetchIssue", "Fetch Issue",
-        "Read the issue title and body.",
+        "Read the issue title and body and render the implementation user message.",
         [io("repo", "string", "owner/name"), io("issueNumber", "number", "Issue number")],
-        [io("issueTitle", "string", "Issue title"), io("issueBody", "string", "Issue body")]),
+        [io("issueTitle", "string", "Issue title"), io("issueBody", "string", "Issue body"),
+          io("prompt", "string", "Issue rendered as the implementation user message")]),
       step("clone-repo", "git.cloneRepo", "Clone Repo",
-        "Clone into <tempDir>/jobs/<uuid>/<reponame>.",
+        "Clone into <tempDir>/jobs/<uuid>/<reponame> so the model can explore it.",
         [io("repo", "string", "owner/name"), io("jobUuid", "string", "Per-job UUID")],
         [io("workdir", "string", "Local clone path"), io("baseBranch", "string", "Default branch")]),
       step("create-branch", "git.createBranch", "Create Branch",
-        "Create branch strappy/issue-<n>.",
+        "Create branch strappy/issue-<n> before the model edits.",
         [io("workdir", "string", "Local clone path"), io("issueNumber", "number", "Issue number")],
         [io("branch", "string", "New branch name")]),
-      step("apply-change", "agent.applyChange", "Apply Change (placeholder)",
-        "Touch an empty file; this is where the LLM will edit code later.",
-        [io("workdir", "string", "Local clone path"), io("issueNumber", "number", "Issue number")],
-        [io("changedPath", "string", "Path of the touched file")]),
+      step("implement-issue", "llm", "Implement Issue",
+        "Explore the cloned repo, make the changes, and report a commit message + PR summary.",
+        [io("prompt", "string", "Issue rendered as the user message"),
+          io("workdir", "string", "Local clone path the model explores and edits")],
+        [io("category", "string", "bug | feature | question | chore"),
+          io("difficulty", "integer", "1 (easy) to 5 (most difficult)"),
+          io("rationale", "string", "One or two sentences a maintainer can act on"),
+          io("commitMessage", "string", "Git commit message for the changes the model made"),
+          io("prSummary", "string", "Markdown summary of the changes, used as the PR body")],
+        loadPrompt("implement-issue")),
       step("commit-push", "git.commitPush", "Commit & Push",
-        "Commit the change and push the branch.",
-        [io("workdir", "string", "Local clone path"), io("branch", "string", "Branch to push")],
+        "Commit the model's changes with its commit message and push the branch.",
+        [io("workdir", "string", "Local clone path"), io("branch", "string", "Branch to push"),
+          io("commitMessage", "string", "Commit message from the implement step")],
         [io("pushed", "boolean", "Whether the branch was pushed")]),
       step("open-pr", "github.openPullRequest", "Open Pull Request",
-        "Open a PR from the branch into the default branch.",
+        "Open a PR from the branch into the default branch using the model's summary as the body.",
         [io("repo", "string", "owner/name"), io("branch", "string", "Head branch"),
-          io("baseBranch", "string", "Base branch"), io("issueNumber", "number", "Issue number")],
+          io("baseBranch", "string", "Base branch"), io("issueNumber", "number", "Issue number"),
+          io("prSummary", "string", "PR body from the implement step")],
         [io("prNumber", "number", "Created PR number"), io("prUrl", "string", "PR URL")]),
       step("comment-issue", "github.commentIssue", "Comment PR Number",
         "Comment the PR number back on the issue.",
