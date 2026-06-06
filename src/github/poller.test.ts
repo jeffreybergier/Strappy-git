@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { IssuePoller, isAllowedAuthor } from "./poller.js";
+import { IssuePoller, isAllowedAuthor, formatRunId } from "./poller.js";
 import type { GitHubClient, IssueRef } from "./client.js";
 import { openDatabase } from "../jobs/db.js";
 import { SqliteJobStore } from "../jobs/sqliteStore.js";
@@ -28,6 +28,22 @@ test("isAllowedAuthor denies an empty login", () => {
 
 test("isAllowedAuthor throws on a non-string login", () => {
   assert.throws(() => isAllowedAuthor(123 as never, ["x"]), /login must be a string/);
+});
+
+// ---- formatRunId (informative run names) ------------------------------------
+
+test("formatRunId builds <repo>#<issue>/<process>/<uuid8>", () => {
+  assert.equal(
+    formatRunId("owner/name", 42, "process-issue", "16498324-4dab-425b-93ca-3f49310dfe8e"),
+    "owner/name#42/process-issue/16498324",
+  );
+});
+
+test("formatRunId throws on invalid args", () => {
+  assert.throws(() => formatRunId("", 1, "p", "u"), /repo must be a non-empty string/);
+  assert.throws(() => formatRunId("o/r", 1.5, "p", "u"), /issueNumber must be an integer/);
+  assert.throws(() => formatRunId("o/r", 1, "", "u"), /process must be a non-empty string/);
+  assert.throws(() => formatRunId("o/r", 1, "p", ""), /jobUuid must be a non-empty string/);
 });
 
 // ---- IssuePoller (ledger-only dedupe + sequential queue, no network) --------
@@ -90,6 +106,13 @@ test("poller decides via the ledger — a handled issue is never re-processed", 
   await poller.tick();
   await poller.whenIdle();
   assert.equal(store.listRuns().length, 1);
+});
+
+test("poller names runs <repo>#<issue>/<process>/<uuid8>", async () => {
+  const { store, poller } = setup({ "o/r": [issue("o/r", 7, "jeffreybergier")] });
+  await poller.tick();
+  await poller.whenIdle();
+  assert.match(store.listRuns()[0]?.id ?? "", /^o\/r#7\/process-issue\/[0-9a-f]{8}$/);
 });
 
 test("poller processes a whole pre-existing backlog (no time window)", async () => {

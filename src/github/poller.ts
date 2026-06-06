@@ -20,6 +20,17 @@ export function isAllowedAuthor(login: string, whitelist: readonly string[]): bo
   return whitelist.some((u) => u.trim().toLowerCase() === needle);
 }
 
+// Informative run id: <repo>#<issue>/<process>/<first uuid segment>, e.g.
+// owner/name#42/process-issue/16498324 — readable in place of run-<full uuid>.
+export function formatRunId(repo: string, issueNumber: number, process: string, jobUuid: string): string {
+  if (typeof repo !== "string" || repo.trim() === "") throw new Error("[Poller.formatRunId] repo must be a non-empty string");
+  if (!Number.isInteger(issueNumber)) throw new Error("[Poller.formatRunId] issueNumber must be an integer");
+  if (typeof process !== "string" || process.trim() === "") throw new Error("[Poller.formatRunId] process must be a non-empty string");
+  if (typeof jobUuid !== "string" || jobUuid.trim() === "") throw new Error("[Poller.formatRunId] jobUuid must be a non-empty string");
+  const uuid8 = jobUuid.split("-")[0] ?? jobUuid;
+  return `${repo}#${issueNumber}/${process}/${uuid8}`;
+}
+
 interface QueueItem {
   repo: string;
   issueNumber: number;
@@ -125,7 +136,7 @@ export class IssuePoller {
     }
     if (this.store.isProcessed(issue.repo, issue.number)) return;
     const jobUuid = randomUUID();
-    const runId = `run-${jobUuid}`;
+    const runId = formatRunId(issue.repo, issue.number, this.job.id, jobUuid);
     this.store.markProcessing(issue.repo, issue.number, runId);
     this.queue.enqueue({ repo: issue.repo, issueNumber: issue.number, issueAuthor: issue.author, jobUuid, runId });
     log.info("enqueue", `${issue.repo}#${issue.number} queued (depth ${this.queue.size})`);

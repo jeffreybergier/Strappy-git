@@ -9,8 +9,8 @@ test("seeded store exposes jobs", () => {
 
 test("getJob returns the job when present", () => {
   const store = JobStore.seeded();
-  const job = store.getJob("triage-issue");
-  assert.equal(job?.id, "triage-issue");
+  const job = store.getJob("process-issue");
+  assert.equal(job?.id, "process-issue");
 });
 
 test("getJob returns null when absent", () => {

@@ -40,17 +40,17 @@ test("runJob threads one step's outputs into the next step's inputs", async () =
 test("runJob runs a seeded job with default kinds and records a succeeded run", async () => {
   const db = openDatabase(":memory:");
   const store = new SqliteJobStore(db);
-  const triage = seedJobs().find((j) => j.id === "triage-issue");
-  assert.ok(triage);
-  store.saveJob(triage);
-  const run = await runJob(triage, { repo: "o/r", issueNumber: 1 }, {
+  const proc = seedJobs().find((j) => j.id === "process-issue");
+  assert.ok(proc);
+  store.saveJob(proc);
+  const run = await runJob(proc, { repo: "o/r", issueNumber: 1, jobUuid: "uuid-test" }, {
     registry: defaultStepKinds(),
     store,
     now: () => "2026-06-06T00:00:00.000Z",
     newRunId: () => "run-test",
   });
   assert.equal(run.status, "succeeded");
-  assert.equal(run.stepRuns.length, triage.steps.length);
+  assert.equal(run.stepRuns.length, proc.steps.length);
   assert.ok(run.stepRuns.every((s) => s.status === "succeeded"));
   assert.deepEqual(store.listRuns().find((r) => r.id === "run-test"), run);
 });

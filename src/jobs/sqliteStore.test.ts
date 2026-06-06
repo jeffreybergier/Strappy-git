@@ -18,9 +18,9 @@ test("seeded sqlite store exposes the seeded jobs", () => {
 
 test("getJob hydrates steps with ordered inputs and outputs", () => {
   const store = freshStore();
-  const job = store.getJob("triage-issue");
-  assert.equal(job?.id, "triage-issue");
-  assert.deepEqual(job, seedJobs().find((j) => j.id === "triage-issue"));
+  const job = store.getJob("process-issue");
+  assert.equal(job?.id, "process-issue");
+  assert.deepEqual(job, seedJobs().find((j) => j.id === "process-issue"));
 });
 
 test("getJob returns null when absent", () => {
@@ -33,12 +33,31 @@ test("getJob throws on a non-string id", () => {
   assert.throws(() => store.getJob(123 as never), /id must be a string/);
 });
 
+test("seeded sqlite store starts with no runs", () => {
+  assert.equal(freshStore().listRuns().length, 0);
+  assert.equal(seedRuns().length, 0);
+});
+
 test("listRuns preserves step runs, statuses and optional notes", () => {
-  const store = freshStore();
+  const db = openDatabase(":memory:");
+  const store = new SqliteJobStore(db);
+  store.saveJob({ id: "j", name: "J", description: "d", trigger: "manual", steps: [] });
+  const run: JobRun = {
+    id: "run-note",
+    jobId: "j",
+    status: "failed",
+    startedAt: "2026-06-06T00:00:00.000Z",
+    finishedAt: "2026-06-06T00:00:02.000Z",
+    stepRuns: [
+      { stepId: "a", status: "succeeded" },
+      { stepId: "b", status: "failed", note: "OpenRouter rate limit" },
+      { stepId: "c", status: "skipped" },
+    ],
+  };
+  store.recordRun(run);
   const runs = store.listRuns();
-  assert.equal(runs.length, seedRuns().length);
-  const failed = runs.find((r) => r.id === "run-1003");
-  assert.equal(failed?.stepRuns.find((s) => s.stepId === "classify")?.note, "OpenRouter rate limit");
+  assert.equal(runs.length, 1);
+  assert.equal(runs[0]?.stepRuns.find((s) => s.stepId === "b")?.note, "OpenRouter rate limit");
 });
 
 test("seedDatabase is idempotent (no duplicate rows on a second call)", () => {
