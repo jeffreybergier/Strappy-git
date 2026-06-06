@@ -16,8 +16,8 @@ packages, used as an **SDK / library — not the CLI**) talking to
 **[OpenRouter](https://openrouter.ai)**, so we can run open-source models
 (Llama, Qwen, DeepSeek, …) behind one OpenAI-compatible endpoint.
 
-> Status: **scaffold**. Web server + dashboard + LLM seam + tests are done.
-> The GitHub poller and the job scheduler are not built yet.
+> Status: **scaffold**. Web server + dashboard + LLM seam + SQLite persistence
+> + tests are done. The GitHub poller and the job scheduler are not built yet.
 
 ## Environment / where things live
 
@@ -80,6 +80,29 @@ asking.)
   Pi SDK types but no live OpenRouter call has been made (needs a key). Verify
   this once `OPENROUTER_API_KEY` is available.
 
+## How persistence (SQLite) is wired
+
+- Jobs, process steps, typed inputs/outputs, and runs persist to a **local
+  SQLite file** via Node's **built-in `node:sqlite`** (`DatabaseSync`) — no npm
+  dependency, no native build. It's synchronous, so the store stays synchronous.
+- File path: `config.dbPath` → `DB_PATH` env, default **`data/strappy.sqlite`**
+  (resolved from `process.cwd()`). The whole **`data/` dir is gitignored** along
+  with `*.sqlite`/`-wal`/`-shm` — runtime data is never checked in. `data/` is
+  created on demand; the DB is **seeded from `seed.ts` only when empty**
+  (idempotent), so deleting the file just regenerates the sample jobs.
+- Schema lives in `src/jobs/schema.ts` (one `CREATE TABLE IF NOT EXISTS` block):
+  `jobs → process_steps → step_io` (inputs + outputs in one table keyed by a
+  `direction` column) and `job_runs → step_runs`. Ordered relations carry an
+  explicit `position` column so `ORDER BY` round-trips step/IO order. Composite
+  FKs cascade; `PRAGMA foreign_keys = ON` + WAL are set on open.
+- `src/jobs/db.ts` is the **data-access seam**: `openDatabase()`,
+  `seedDatabase()`, hydrating reads (`readJobs/readJob/readRuns`) and inserts.
+  Row coercion is strict — it throws on unexpected column shapes/statuses.
+- `src/jobs/sqliteStore.ts` (`SqliteJobStore`) implements the shared
+  `JobReadStore` interface (same read surface as the in-memory `JobStore`, so
+  routes accept either) and adds `saveJob()` / `recordRun()` write methods — the
+  persistence seam the future scheduler will call to record real `JobRun`s.
+
 ## Environment variables
 
 Copy `.env.example` → `.env` (the repo `.gitignore` ignores `.env`, keeps
@@ -91,6 +114,7 @@ Copy `.env.example` → `.env` (the repo `.gitignore` ignores `.env`, keeps
 | `OPENROUTER_MODEL` | `meta-llama/llama-3.3-70b-instruct` | Default model id |
 | `PORT` | `3000` | Dashboard port |
 | `HOST` | `0.0.0.0` | Bind interface (keep `0.0.0.0` for Docker reachability) |
+| `DB_PATH` | `data/strappy.sqlite` | SQLite file path (gitignored; auto-created + seeded) |
 
 ## Project structure
 
@@ -104,8 +128,12 @@ src/
   jobs/
     types.ts           ISO 9001 types: Job, ProcessStep, StepIO, JobRun, StepRun
     seed.ts            sample jobs (Triage New Issue, Review Pull Request) + runs
-    store.ts           in-memory JobStore (getJob returns null when absent)
+    store.ts           in-memory JobStore + JobReadStore interface
     store.test.ts      JobStore tests
+    schema.ts          SQLite DDL (jobs, process_steps, step_io, *_runs)
+    db.ts              node:sqlite data-access: open/seed/read/insert
+    sqliteStore.ts     SqliteJobStore (JobReadStore + saveJob/recordRun)
+    sqliteStore.test.ts  SqliteJobStore round-trip tests (in-memory db)
   routes/
     dashboard.ts       GET /  (server-rendered EJS)
     api.ts             GET /api/jobs|/api/jobs/:id|/api/runs (JSON)
@@ -145,9 +173,11 @@ step's `inputs` and record a real `JobRun`.
 ## Verified working
 
 - `npm install` clean; `npm run typecheck` clean (incl. `*.test.ts`).
-- `npm test` → 9 passing.
+- `npm test` → 18 passing (9 store/logger/config + 9 SqliteJobStore).
 - Dashboard boots, binds `0.0.0.0:3000`, `GET /` returns 200, renders the
-  seeded process maps; `GET /api/jobs` returns JSON.
+  seeded process maps **served from SQLite**; `GET /api/jobs` / `/api/runs`
+  return JSON hydrated from `data/strappy.sqlite` (auto-created + seeded; the
+  file is gitignored — `git check-ignore` confirms).
 - (Could not run `docker compose` in the build sandbox — no daemon. The maintainer
   confirmed `docker compose up serve` works from the Mac.)
 
@@ -157,8 +187,8 @@ step's `inputs` and record a real `JobRun`.
    `octokit`), emitting trigger events keyed to `Job.trigger`
    (`github.issue.opened`, `github.pull_request.opened`).
 2. **Scheduler engine** — execute a `Job`'s steps in order, threading
-   `outputs → inputs`, recording a real `JobRun`/`StepRun`s, calling
-   `runPrompt()` from LLM-backed steps.
+   `outputs → inputs`, recording a real `JobRun`/`StepRun`s (persist via
+   `SqliteJobStore.recordRun()`), calling `runPrompt()` from LLM-backed steps.
 3. **Live-verify** `runPrompt()` against OpenRouter once a key is set.
 4. Optional: wire `OPENROUTER_API_KEY` into the `serve` service (e.g.
    `env_file: .env`) so LLM steps work under compose.

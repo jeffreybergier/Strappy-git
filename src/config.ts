@@ -13,6 +13,7 @@ export const config = {
   port: intFromEnv("PORT", 3000),
   host: process.env.HOST ?? "0.0.0.0",
   modelsPath: path.resolve(process.cwd(), "config/models.json"),
+  dbPath: path.resolve(process.cwd(), process.env.DB_PATH ?? "data/strappy.sqlite"),
   openRouter: {
     provider: "openrouter",
     model: process.env.OPENROUTER_MODEL ?? "meta-llama/llama-3.3-70b-instruct",

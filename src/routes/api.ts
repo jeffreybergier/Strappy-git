@@ -1,7 +1,7 @@
 import { Router } from "express";
-import type { JobStore } from "../jobs/store.js";
+import type { JobReadStore } from "../jobs/store.js";
 
-export function apiRouter(store: JobStore): Router {
+export function apiRouter(store: JobReadStore): Router {
   if (!store) throw new Error("[apiRouter] store is required");
   const router = Router();
   router.get("/jobs", (_req, res) => {

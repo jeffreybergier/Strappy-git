@@ -1,7 +1,15 @@
 import type { Job, JobRun } from "./types.js";
 import { seedJobs, seedRuns } from "./seed.js";
 
-export class JobStore {
+// Read surface shared by the in-memory JobStore and the SqliteJobStore so the
+// routes can depend on either without knowing the backing store.
+export interface JobReadStore {
+  listJobs(): Job[];
+  getJob(id: string): Job | null;
+  listRuns(): JobRun[];
+}
+
+export class JobStore implements JobReadStore {
   private readonly jobs: Map<string, Job>;
   private readonly runs: JobRun[];
 

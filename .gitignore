@@ -70,6 +70,12 @@ web_modules/
 .env.*
 !.env.example
 
+# SQLite database (runtime data — never checked in)
+/data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
 # parcel-bundler cache (https://parceljs.org/)
 .cache
 .parcel-cache

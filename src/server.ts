@@ -3,13 +3,22 @@ import path from "node:path";
 import express from "express";
 import { config } from "./config.js";
 import { createLogger } from "./logger.js";
-import { JobStore } from "./jobs/store.js";
+import type { JobReadStore } from "./jobs/store.js";
+import { openDatabase, seedDatabase } from "./jobs/db.js";
+import { SqliteJobStore } from "./jobs/sqliteStore.js";
+import { seedJobs, seedRuns } from "./jobs/seed.js";
 import { dashboardRouter } from "./routes/dashboard.js";
 import { apiRouter } from "./routes/api.js";
 
 const log = createLogger("Server");
 
-function createApp(store: JobStore): express.Express {
+function openStore(): SqliteJobStore {
+  const db = openDatabase(config.dbPath);
+  seedDatabase(db, seedJobs(), seedRuns());
+  return new SqliteJobStore(db);
+}
+
+function createApp(store: JobReadStore): express.Express {
   const app = express();
   app.set("view engine", "ejs");
   app.set("views", path.resolve(process.cwd(), "views"));
@@ -28,7 +37,7 @@ function warnIfNoKey(): void {
 }
 
 function start(): void {
-  const store = JobStore.seeded();
+  const store = openStore();
   const app = createApp(store);
   warnIfNoKey();
   app.listen(config.port, config.host, () => {
