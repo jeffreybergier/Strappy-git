@@ -12,12 +12,13 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 
 CREATE TABLE IF NOT EXISTS process_steps (
-  id          TEXT NOT NULL,
-  job_id      TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
-  position    INTEGER NOT NULL,
-  kind        TEXT NOT NULL,
-  name        TEXT NOT NULL,
-  description TEXT NOT NULL,
+  id            TEXT NOT NULL,
+  job_id        TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  position      INTEGER NOT NULL,
+  kind          TEXT NOT NULL,
+  name          TEXT NOT NULL,
+  description   TEXT NOT NULL,
+  system_prompt TEXT,
   PRIMARY KEY (job_id, id)
 );
 
@@ -50,6 +51,23 @@ CREATE TABLE IF NOT EXISTS step_runs (
   finished_at TEXT,
   note        TEXT,
   PRIMARY KEY (run_id, step_id)
+);
+
+CREATE TABLE IF NOT EXISTS step_executions (
+  run_id        TEXT NOT NULL,
+  step_id       TEXT NOT NULL,
+  provider      TEXT NOT NULL,
+  model         TEXT NOT NULL,
+  stop_reason   TEXT NOT NULL,
+  text          TEXT NOT NULL,
+  thinking      TEXT,
+  input_tokens  INTEGER NOT NULL,
+  output_tokens INTEGER NOT NULL,
+  total_tokens  INTEGER NOT NULL,
+  cost_total    REAL NOT NULL,
+  tool_calls    TEXT NOT NULL DEFAULT '[]',
+  PRIMARY KEY (run_id, step_id),
+  FOREIGN KEY (run_id, step_id) REFERENCES step_runs(run_id, step_id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS processed_triggers (

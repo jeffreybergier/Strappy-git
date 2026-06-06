@@ -1,5 +1,5 @@
 import { createLogger } from "../logger.js";
-import type { ProcessStep } from "./types.js";
+import type { LlmExecution, ProcessStep } from "./types.js";
 
 const log = createLogger("StepKinds");
 
@@ -9,6 +9,9 @@ export type StepValues = Record<string, unknown>;
 export interface StepContext {
   step: ProcessStep;
   inputs: StepValues;
+  // LLM-backed executors call this to attach a full model execution to the
+  // step's StepRun; non-LLM executors ignore it.
+  recordExecution?: (execution: LlmExecution) => void;
 }
 
 // A reusable, named unit of step behavior: resolved inputs in, declared outputs

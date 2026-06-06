@@ -60,6 +60,52 @@ test("listRuns preserves step runs, statuses and optional notes", () => {
   assert.equal(runs[0]?.stepRuns.find((s) => s.stepId === "b")?.note, "OpenRouter rate limit");
 });
 
+test("recordRun persists and round-trips a full LLM execution on a step run", () => {
+  const db = openDatabase(":memory:");
+  const store = new SqliteJobStore(db);
+  store.saveJob({ id: "j", name: "J", description: "d", trigger: "manual", steps: [] });
+  const run: JobRun = {
+    id: "run-llm",
+    jobId: "j",
+    status: "succeeded",
+    startedAt: "2026-06-06T00:00:00.000Z",
+    finishedAt: "2026-06-06T00:00:03.000Z",
+    stepRuns: [
+      {
+        stepId: "ask",
+        status: "succeeded",
+        startedAt: "2026-06-06T00:00:01.000Z",
+        finishedAt: "2026-06-06T00:00:03.000Z",
+        execution: {
+          provider: "openrouter",
+          model: "meta-llama/llama-3.3-70b-instruct",
+          stopReason: "stop",
+          text: "Labelled as bug.",
+          thinking: "the title mentions a crash",
+          toolCalls: [{ id: "c1", name: "applyLabels", arguments: { labels: ["bug"] } }],
+          usage: { inputTokens: 1200, outputTokens: 64, totalTokens: 1264, costTotal: 0.00042 },
+        },
+      },
+    ],
+  };
+  store.recordRun(run);
+  assert.deepEqual(store.listRuns(), [run]);
+});
+
+test("a step run without an execution stays execution-free after a round-trip", () => {
+  const db = openDatabase(":memory:");
+  const store = new SqliteJobStore(db);
+  store.saveJob({ id: "j", name: "J", description: "d", trigger: "manual", steps: [] });
+  store.recordRun({
+    id: "r",
+    jobId: "j",
+    status: "succeeded",
+    startedAt: "2026-06-06T00:00:00.000Z",
+    stepRuns: [{ stepId: "s", status: "succeeded" }],
+  });
+  assert.equal("execution" in (store.listRuns()[0]?.stepRuns[0] ?? {}), false);
+});
+
 test("seedDatabase is idempotent (no duplicate rows on a second call)", () => {
   const db = openDatabase(":memory:");
   seedDatabase(db, seedJobs(), seedRuns());
@@ -88,6 +134,30 @@ test("saveJob + getJob round-trips a new job with its IO contract", () => {
   };
   store.saveJob(job);
   assert.deepEqual(store.getJob("echo"), job);
+});
+
+test("saveJob + getJob round-trips a step's authored systemPrompt", () => {
+  const db = openDatabase(":memory:");
+  const store = new SqliteJobStore(db);
+  const job: Job = {
+    id: "triage",
+    name: "Triage",
+    description: "Triage an issue.",
+    trigger: "github.issue.opened",
+    steps: [
+      {
+        id: "classify",
+        kind: "llm",
+        name: "Classify",
+        description: "Classify the issue.",
+        systemPrompt: "You are a triage bot. Categorise the issue.",
+        inputs: [{ key: "prompt", type: "string", description: "issue text" }],
+        outputs: [{ key: "answer", type: "string", description: "decision" }],
+      },
+    ],
+  };
+  store.saveJob(job);
+  assert.deepEqual(store.getJob("triage"), job);
 });
 
 test("recordRun + listRuns round-trips an execution", () => {

@@ -6,7 +6,18 @@ import type { StepValues } from "./stepKinds.js";
 import { openDatabase } from "./db.js";
 import { SqliteJobStore } from "./sqliteStore.js";
 import { seedJobs } from "./seed.js";
-import type { Job, ProcessStep } from "./types.js";
+import type { Job, LlmExecution, ProcessStep } from "./types.js";
+
+function fakeExecution(text: string): LlmExecution {
+  return {
+    provider: "openrouter",
+    model: "m",
+    stopReason: "stop",
+    text,
+    toolCalls: [],
+    usage: { inputTokens: 5, outputTokens: 2, totalTokens: 7, costTotal: 0 },
+  };
+}
 
 function step(id: string, kind: string, inputs: string[], outputs: string[]): ProcessStep {
   return {
@@ -53,6 +64,30 @@ test("runJob runs a seeded job with default kinds and records a succeeded run", 
   assert.equal(run.stepRuns.length, proc.steps.length);
   assert.ok(run.stepRuns.every((s) => s.status === "succeeded"));
   assert.deepEqual(store.listRuns().find((r) => r.id === "run-test"), run);
+});
+
+test("an executor's recorded execution is attached to its step run and persisted", async () => {
+  const db = openDatabase(":memory:");
+  const store = new SqliteJobStore(db);
+  const registry = new StepKindRegistry().register("ask", (ctx) => {
+    ctx.recordExecution?.(fakeExecution("hi there"));
+    return { answer: "hi there" };
+  });
+  const j = job("j", [step("ask", "ask", [], ["answer"])]);
+  store.saveJob(j);
+  const run = await runJob(j, {}, { registry, store, newRunId: () => "run-exec" });
+  assert.deepEqual(run.stepRuns[0]?.execution, fakeExecution("hi there"));
+  assert.deepEqual(store.listRuns().find((r) => r.id === "run-exec"), run);
+});
+
+test("a recorded execution is kept even when the step later fails its contract", async () => {
+  const registry = new StepKindRegistry().register("ask", (ctx) => {
+    ctx.recordExecution?.(fakeExecution("partial"));
+    return {}; // omits the declared "answer" output -> contract failure
+  });
+  const run = await runJob(job("j", [step("ask", "ask", [], ["answer"])]), {}, { registry });
+  assert.equal(run.stepRuns[0]?.status, "failed");
+  assert.equal(run.stepRuns[0]?.execution?.text, "partial");
 });
 
 test("a thrown step fails the run and skips the remaining steps", async () => {

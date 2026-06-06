@@ -6,11 +6,13 @@ import { applySchema } from "./schema.js";
 import type {
   Job,
   JobRun,
+  LlmExecution,
   ProcessStep,
   RunStatus,
   StepIO,
   StepRun,
   StepStatus,
+  ToolCallRecord,
 } from "./types.js";
 
 const log = createLogger("Db");
@@ -58,7 +60,7 @@ export function readRuns(db: DatabaseSync): JobRun[] {
 function hydrateJob(db: DatabaseSync, row: Row): Job {
   const id = text(row, "id");
   const stepRows = db
-    .prepare("SELECT id, kind, name, description FROM process_steps WHERE job_id = ? ORDER BY position")
+    .prepare("SELECT id, kind, name, description, system_prompt FROM process_steps WHERE job_id = ? ORDER BY position")
     .all(id);
   return {
     id,
@@ -71,11 +73,13 @@ function hydrateJob(db: DatabaseSync, row: Row): Job {
 
 function hydrateStep(db: DatabaseSync, jobId: string, row: Row): ProcessStep {
   const stepId = text(row, "id");
+  const systemPrompt = textOrUndefined(row, "system_prompt");
   return {
     id: stepId,
     kind: text(row, "kind"),
     name: text(row, "name"),
     description: text(row, "description"),
+    ...(systemPrompt !== undefined && { systemPrompt }),
     inputs: readIO(db, jobId, stepId, "input"),
     outputs: readIO(db, jobId, stepId, "output"),
   };
@@ -109,21 +113,46 @@ function readStepRuns(db: DatabaseSync, runId: string): StepRun[] {
       "SELECT step_id, status, started_at, finished_at, note FROM step_runs WHERE run_id = ? ORDER BY position",
     )
     .all(runId)
-    .map((r) => hydrateStepRun(r));
+    .map((r) => hydrateStepRun(db, runId, r));
 }
 
 // Optional columns are attached only when non-NULL so a read-back value equals
 // the value originally written (deep-equal treats { note: undefined } !== {}).
-function hydrateStepRun(r: Row): StepRun {
+function hydrateStepRun(db: DatabaseSync, runId: string, r: Row): StepRun {
+  const stepId = text(r, "step_id");
   const startedAt = textOrUndefined(r, "started_at");
   const finishedAt = textOrUndefined(r, "finished_at");
   const note = textOrUndefined(r, "note");
+  const execution = readExecution(db, runId, stepId);
   return {
-    stepId: text(r, "step_id"),
+    stepId,
     status: asStepStatus(text(r, "status")),
     ...(startedAt !== undefined && { startedAt }),
     ...(finishedAt !== undefined && { finishedAt }),
     ...(note !== undefined && { note }),
+    ...(execution !== undefined && { execution }),
+  };
+}
+
+function readExecution(db: DatabaseSync, runId: string, stepId: string): LlmExecution | undefined {
+  const row = db
+    .prepare("SELECT * FROM step_executions WHERE run_id = ? AND step_id = ?")
+    .get(runId, stepId);
+  if (row === undefined) return undefined;
+  const thinking = textOrUndefined(row, "thinking");
+  return {
+    provider: text(row, "provider"),
+    model: text(row, "model"),
+    stopReason: text(row, "stop_reason"),
+    text: text(row, "text"),
+    ...(thinking !== undefined && { thinking }),
+    toolCalls: parseToolCalls(text(row, "tool_calls")),
+    usage: {
+      inputTokens: integer(row, "input_tokens"),
+      outputTokens: integer(row, "output_tokens"),
+      totalTokens: integer(row, "total_tokens"),
+      costTotal: real(row, "cost_total"),
+    },
   };
 }
 
@@ -141,13 +170,16 @@ export function insertJob(db: DatabaseSync, job: Job): void {
 }
 
 function insertStep(db: DatabaseSync, jobId: string, step: ProcessStep, position: number): void {
-  db.prepare("INSERT INTO process_steps (id, job_id, position, kind, name, description) VALUES (?, ?, ?, ?, ?, ?)").run(
+  db.prepare(
+    "INSERT INTO process_steps (id, job_id, position, kind, name, description, system_prompt) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  ).run(
     step.id,
     jobId,
     position,
     step.kind,
     step.name,
     step.description,
+    step.systemPrompt ?? null,
   );
   step.inputs.forEach((io, i) => insertIO(db, jobId, step.id, "input", io, i));
   step.outputs.forEach((io, i) => insertIO(db, jobId, step.id, "output", io, i));
@@ -175,6 +207,27 @@ function insertStepRun(db: DatabaseSync, runId: string, sr: StepRun, position: n
   db.prepare(
     "INSERT INTO step_runs (run_id, step_id, position, status, started_at, finished_at, note) VALUES (?, ?, ?, ?, ?, ?, ?)",
   ).run(runId, sr.stepId, position, sr.status, sr.startedAt ?? null, sr.finishedAt ?? null, sr.note ?? null);
+  if (sr.execution) insertExecution(db, runId, sr.stepId, sr.execution);
+}
+
+function insertExecution(db: DatabaseSync, runId: string, stepId: string, exec: LlmExecution): void {
+  validateExecution(exec);
+  db.prepare(
+    "INSERT INTO step_executions (run_id, step_id, provider, model, stop_reason, text, thinking, input_tokens, output_tokens, total_tokens, cost_total, tool_calls) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run(
+    runId,
+    stepId,
+    exec.provider,
+    exec.model,
+    exec.stopReason,
+    exec.text,
+    exec.thinking ?? null,
+    exec.usage.inputTokens,
+    exec.usage.outputTokens,
+    exec.usage.totalTokens,
+    exec.usage.costTotal,
+    JSON.stringify(exec.toolCalls),
+  );
 }
 
 // ---- de-dupe ledger ---------------------------------------------------------
@@ -250,6 +303,35 @@ function textOrUndefined(row: Row, col: string): string | undefined {
   return v;
 }
 
+// node:sqlite hands back INTEGER columns as number or, for large values, bigint.
+function integer(row: Row, col: string): number {
+  const v = row[col];
+  if (typeof v === "bigint") return Number(v);
+  if (typeof v === "number" && Number.isInteger(v)) return v;
+  throw new Error(`[Db.integer] column "${col}" is not an integer`);
+}
+
+function real(row: Row, col: string): number {
+  const v = row[col];
+  if (typeof v === "bigint") return Number(v);
+  if (typeof v === "number") return v;
+  throw new Error(`[Db.real] column "${col}" is not a number`);
+}
+
+function parseToolCalls(json: string): ToolCallRecord[] {
+  const parsed: unknown = JSON.parse(json);
+  if (!Array.isArray(parsed)) throw new Error("[Db.parseToolCalls] tool_calls is not an array");
+  return parsed.map((c) => asToolCall(c));
+}
+
+function asToolCall(c: unknown): ToolCallRecord {
+  if (c === null || typeof c !== "object") throw new Error("[Db.asToolCall] tool call must be an object");
+  const { id, name, arguments: args } = c as Record<string, unknown>;
+  if (typeof id !== "string" || typeof name !== "string") throw new Error("[Db.asToolCall] tool call id/name must be strings");
+  if (args === null || typeof args !== "object") throw new Error("[Db.asToolCall] tool call arguments must be an object");
+  return { id, name, arguments: args as Record<string, unknown> };
+}
+
 function asStepStatus(v: string): StepStatus {
   if (!STEP_STATUSES.includes(v as StepStatus)) throw new Error(`[Db.asStepStatus] invalid status "${v}"`);
   return v as StepStatus;
@@ -268,4 +350,10 @@ function validateJob(job: Job): void {
 function validateRun(run: JobRun): void {
   if (!run || typeof run.id !== "string") throw new Error("[Db.validateRun] run.id must be a string");
   if (!Array.isArray(run.stepRuns)) throw new Error("[Db.validateRun] run.stepRuns must be an array");
+}
+
+function validateExecution(exec: LlmExecution): void {
+  if (!exec || typeof exec.text !== "string") throw new Error("[Db.validateExecution] execution.text must be a string");
+  if (!Array.isArray(exec.toolCalls)) throw new Error("[Db.validateExecution] execution.toolCalls must be an array");
+  if (!exec.usage || typeof exec.usage.totalTokens !== "number") throw new Error("[Db.validateExecution] execution.usage is required");
 }

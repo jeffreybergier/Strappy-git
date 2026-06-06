@@ -3,7 +3,7 @@ import { createLogger } from "../logger.js";
 import { StepKindRegistry } from "./stepKinds.js";
 import type { StepValues } from "./stepKinds.js";
 import type { JobWriteStore } from "./store.js";
-import type { Job, JobRun, ProcessStep, StepRun } from "./types.js";
+import type { Job, JobRun, LlmExecution, ProcessStep, StepRun } from "./types.js";
 
 const log = createLogger("Scheduler");
 
@@ -43,14 +43,17 @@ export async function runJob(job: Job, triggerInputs: StepValues, options: RunJo
 
 async function runStep(step: ProcessStep, bus: StepValues, registry: StepKindRegistry, now: () => string): Promise<Outcome> {
   const startedAt = now();
+  // Captured even if the step later fails, so a model call is always recorded.
+  let execution: LlmExecution | undefined;
+  const recordExecution = (e: LlmExecution): void => { execution = e; };
   try {
     const inputs = resolveInputs(step, bus);
-    const outputs = await registry.resolve(step.kind)({ step, inputs });
+    const outputs = await registry.resolve(step.kind)({ step, inputs, recordExecution });
     validateOutputs(step, outputs);
-    return { stepRun: { stepId: step.id, status: "succeeded", startedAt, finishedAt: now() }, outputs };
+    return { stepRun: { stepId: step.id, status: "succeeded", startedAt, finishedAt: now(), ...(execution && { execution }) }, outputs };
   } catch (error) {
     log.error("runStep", `step "${step.id}" failed`, error);
-    return { stepRun: { stepId: step.id, status: "failed", startedAt, finishedAt: now(), note: message(error) } };
+    return { stepRun: { stepId: step.id, status: "failed", startedAt, finishedAt: now(), note: message(error), ...(execution && { execution }) } };
   }
 }
 
