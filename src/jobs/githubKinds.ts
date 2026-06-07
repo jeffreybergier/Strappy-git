@@ -2,6 +2,7 @@ import path from "node:path";
 import { StepKindRegistry } from "./stepKinds.js";
 import type { StepContext, StepValues } from "./stepKinds.js";
 import { llmStepKind } from "./llmKind.js";
+import { securityStepKind } from "./securityKind.js";
 import type { GitHubClient, IssueComment } from "../github/client.js";
 import * as git from "../github/git.js";
 
@@ -37,6 +38,7 @@ export function githubStepKinds(deps: GitHubKindDeps): StepKindRegistry {
   validateDeps(deps);
   return new StepKindRegistry()
     .register("github.fetchIssue", (ctx) => fetchIssue(deps, ctx))
+    .register("security.scan", securityStepKind())
     .register("git.cloneRepo", (ctx) => cloneRepo(deps, ctx))
     .register("git.createBranch", (ctx) => createBranch(ctx))
     .register("llm", llmStepKind())

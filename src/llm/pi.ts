@@ -29,6 +29,15 @@ export interface StructuredResult {
   execution: LlmExecution;
 }
 
+// Tuning for a structured call.
+export interface RunStructuredOptions {
+  // Default true: the model keeps the built-in read/write/edit/bash tools
+  // alongside the submit tool (the implement step explores + edits the clone).
+  // False runs SUBMIT-ONLY (no built-ins), for a step whose input is untrusted
+  // and must never reach the filesystem/shell — the security gate.
+  builtinTools?: boolean;
+}
+
 const log = createLogger("PiClient");
 
 // Derive the session type from the SDK return value so we stay type-safe
@@ -87,11 +96,13 @@ export async function runPrompt(prompt: string, systemPrompt?: string): Promise<
   }
 }
 
-// Runs the model with the built-in read/write/edit/bash tools plus a submit tool
-// whose schema is the step's declared outputs, then returns the validated
-// arguments (the structured outputs) plus the execution. cwd binds the tools to
-// the checked-out repo, so the model reads/edits the cloned branch — not the
-// server's own working directory.
+// Runs the model with a submit tool whose schema is the step's declared outputs
+// (optionally alongside the built-in read/write/edit/bash tools), then returns
+// the validated arguments (the structured outputs) plus the execution. cwd binds
+// any built-in tools to the checked-out repo, so the model reads/edits the cloned
+// branch — not the server's own working directory. With options.builtinTools
+// false the built-ins are dropped and only the submit tool remains (cwd then has
+// no tool to bind, so it just anchors the transcript session).
 export async function runStructured(
   prompt: string,
   systemPrompt: string | undefined,
@@ -99,6 +110,7 @@ export async function runStructured(
   toolName: string,
   cwd: string,
   runId?: string,
+  options?: RunStructuredOptions,
 ): Promise<StructuredResult> {
   if (typeof prompt !== "string" || prompt.trim() === "") {
     throw new Error("[PiClient.runStructured] prompt must be a non-empty string");
@@ -113,21 +125,29 @@ export async function runStructured(
     throw new Error("[PiClient.runStructured] systemPrompt, when provided, must be a non-empty string");
   }
   requireOpenRouterKey();
+  let sm: SessionManager | undefined;
+  let session: AgentSession | undefined;
   try {
     let values: Record<string, unknown> | undefined;
     const submit = buildSubmitTool(schema, toolName, (args) => { values = args; });
-    const sm = transcriptSession(cwd, runId);
-    const session = await openSession(sm, systemPrompt, [submit], cwd);
+    sm = transcriptSession(cwd, runId);
+    session = await openSession(sm, systemPrompt, [submit], cwd, options?.builtinTools ?? true);
     log.info("runStructured", `prompting ${config.openRouter.provider}/${config.openRouter.model} for ${toolName} in ${cwd}`);
     const execution = await collect(session, prompt);
     logExecution(execution);
     if (values === undefined) throw new Error(`[PiClient.runStructured] model did not call ${toolName}`);
     logValues(values);
-    await saveTranscript(sm, runId, session);
     return { values, execution };
   } catch (error) {
     log.error("runStructured", "failed", error);
     throw error;
+  } finally {
+    // Render the transcript on EVERY exit — success, an app-level block, a model
+    // error, or a no-submit-call. A failed step is exactly when the session is
+    // most worth keeping. Best-effort (saveTranscript never throws); when the
+    // session never opened, just discard the temp dir so it can't leak.
+    if (sm !== undefined && session !== undefined) await saveTranscript(sm, runId, session);
+    else if (sm !== undefined) discardTempSession(sm);
   }
 }
 
@@ -150,7 +170,7 @@ function buildSubmitTool(schema: TObject, toolName: string, capture: (args: Reco
   });
 }
 
-async function openSession(sm: SessionManager, stepPrompt?: string, customTools?: ToolDefinition[], cwd?: string): Promise<AgentSession> {
+async function openSession(sm: SessionManager, stepPrompt?: string, customTools?: ToolDefinition[], cwd?: string, builtinTools = true): Promise<AgentSession> {
   const sessionCwd = cwd ?? process.cwd();
   const base = {
     model: resolveModel(),
@@ -160,10 +180,13 @@ async function openSession(sm: SessionManager, stepPrompt?: string, customTools?
     sessionManager: sm,
     resourceLoader: await cleanLoader(appendLayers(stepPrompt), sessionCwd),
   };
-  // With customTools we omit the allowlist so the built-in read/write/edit/bash
-  // tools stay active alongside the custom tool. Without them (plain text
-  // completion) an empty allowlist disables every tool.
-  const opts = customTools ? { ...base, customTools } : { ...base, tools: [] };
+  // Tool exposure: no customTools -> empty allowlist disables every tool (plain
+  // text completion). With customTools, built-in read/write/edit/bash stay active
+  // alongside it — unless builtinTools is false, where noTools "builtin" drops the
+  // built-ins but keeps the custom tool (submit-only, for an untrusted-input step).
+  const opts = customTools
+    ? { ...base, customTools, ...(builtinTools ? {} : { noTools: "builtin" as const }) }
+    : { ...base, tools: [] };
   const { session } = await createAgentSession(opts);
   return session;
 }

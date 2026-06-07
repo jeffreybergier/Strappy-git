@@ -83,6 +83,7 @@ export function defaultStepKinds(): StepKindRegistry {
   const registry = new StepKindRegistry()
     .register("llm", stubExecutor)
     .register("github.fetchIssue", stubExecutor)
+    .register("security.scan", stubExecutor)
     .register("github.applyLabels", stubExecutor)
     .register("github.postComment", stubExecutor)
     .register("github.fetchDiff", stubExecutor)

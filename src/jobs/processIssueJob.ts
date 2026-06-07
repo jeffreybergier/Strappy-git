@@ -28,8 +28,10 @@ function step(
   return { id, kind, name, description, ...(systemPrompt !== undefined && { systemPrompt }), inputs, outputs };
 }
 
-// Implementation flow: fetch the issue, clone the repo, branch, run the LLM
-// implementation step (it edits the clone and returns a commit message + PR
+// Implementation flow: fetch the issue, screen it for prompt-injection /
+// dangerous instructions (the security gate, which blocks the run before any
+// clone/edit/push if it judges the issue unsafe), clone the repo, branch, run the
+// LLM implementation step (it edits the clone and returns a commit message + PR
 // title + PR summary, and Pi's reported model/cost/tokens are derived alongside),
 // then commit/push, open a PR from the model's title + summary (with an LLM-cost
 // footer), comment the PR number back, and close the issue. Each step reads only ambient trigger
@@ -47,6 +49,14 @@ export function processIssueJob(): Job {
         "Read the issue title and body and render the implementation user message.",
         [io("repo", "string", "trigger", "owner/name"), io("issueNumber", "number", "trigger", "Issue number")],
         [io("userPrompt", "string", "step", "Issue rendered as the implementation user message")]),
+      step("security-scan", "security.scan", "Security Scan",
+        "Screen the issue text for prompt-injection / dangerous instructions before any work runs; block the job if unsafe.",
+        [io("systemPrompt", "string", "static", "Static instructions (loaded from prompts/security-check.md)"),
+          io("userPrompt", "string", "pass", "Issue text to screen, carried on to the clone step")],
+        [io("safe", "boolean", "receipt", "Terminal: the issue passed the security screen"),
+          io("securityReason", "string", "receipt", "Terminal: the guard model's one-line justification"),
+          io("userPrompt", "string", "pass", "Carried to the clone step")],
+        loadPrompt("security-check")),
       step("clone-repo", "git.cloneRepo", "Clone Repo",
         "Clone into <tempDir>/jobs/<uuid>/<reponame> so the model can explore it.",
         [io("repo", "string", "trigger", "owner/name"), io("jobUuid", "string", "trigger", "Per-job UUID"),
