@@ -30,7 +30,7 @@ export const config = {
     // Fail-closed allowlist: empty => Strappy acts for nobody. Lower-cased so
     // author comparison is case-insensitive.
     userWhitelist: listFromEnv("STRAPPY_USER_WHITELIST").map((u) => u.toLowerCase()),
-    pollIntervalMs: intFromEnv("POLL_INTERVAL_MS", 60000),
+    pollIntervalMs: intFromEnv("POLL_INTERVAL_MS", 300000),
     tempDir: process.env.STRAPPY_TEMP_DIR ?? "/strappy-temp",
     committerName: process.env.STRAPPY_GIT_NAME ?? "strappy",
     committerEmail: process.env.STRAPPY_GIT_EMAIL ?? "strappy@users.noreply.github.com",

@@ -19,8 +19,11 @@ services:
       - .:/repo/strappy-git
     working_dir: /repo/strappy-git
 
-  # Runs the jobs dashboard and publishes it to the Mac host.
-  # Browse http://localhost:3000 on the Mac after `docker compose up serve`.
+  # Runs the jobs dashboard and publishes it to every host interface (0.0.0.0),
+  # so other machines on the LAN can browse http://<this-host-ip>:3000 — not just
+  # http://localhost:3000 on the Mac. Builds once and runs the compiled dist/
+  # snapshot (no tsx watch), so a live edit to src/*.ts cannot hot-reload into the
+  # running server; picking up changes requires a deliberate rebuild/restart.
   serve:
     image: ghcr.io/jeffreybergier/altivec-intelligence:latest
     working_dir: /repo/strappy-git
@@ -28,9 +31,9 @@ services:
       - ~/.strappy:/root
       - .:/repo/strappy-git
     ports:
-      - "3000:3000"
+      - "0.0.0.0:3000:3000"
     entrypoint: /bin/bash
-    command: -lc "npm install --no-fund --no-audit && npm run dev"
+    command: -lc "npm install --no-fund --no-audit && npm run build && npm start"
 
   # Runs the Node.js test suite once and exits with the test result code.
   # Run with: docker compose run --rm test
