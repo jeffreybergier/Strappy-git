@@ -33,8 +33,20 @@
       .runs-table td.col-time { font-family: monospace; color: #777; }
       .runs-table .run-row { cursor: pointer; }
       .runs-table .step-row > td { background-color: #fafafa; }
+      .runs-table .step-row-x { cursor: pointer; }
       .runs-table .step-indent { padding-left: 32px; }
       .run-caret { display: inline-block; width: 14px; color: #999; }
+      .runs-table .io-section-row > td,
+      .runs-table .io-cat-row > td,
+      .runs-table .io-row > td,
+      .runs-table .io-value-row > td { background-color: #f5f7f9; border-top: none; }
+      .runs-table .io-row { cursor: pointer; }
+      .io-section-indent { padding-left: 52px; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #555; }
+      .io-cat-indent { padding-left: 72px; font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: #999; }
+      .io-key-indent { padding-left: 92px; font-family: monospace; font-size: 12px; }
+      .io-value-indent { padding-left: 92px; }
+      pre.io-value { white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto;
+        margin: 2px 0 6px; padding: 6px 8px; font-size: 12px; background: #fff; border: 1px solid #e3e3e3; border-radius: 3px; }
     </style>
   </head>
   <body>
@@ -119,8 +131,21 @@
         const container = document.getElementById("runs");
         if (!container) throw new Error("[dashboard] #runs container is missing");
 
-        const expanded = new Set();
-        let stepNames = {};
+        // Category order + labels per direction; the source key matches StepIO.source
+        // and the io-src-* badge classes, so the run hierarchy reuses the map's legend.
+        const INPUT_GROUPS = [
+          ["trigger", "Trigger constants"], ["static", "Static"],
+          ["step", "From previous step"], ["pass", "Passed through"],
+        ];
+        const OUTPUT_GROUPS = [
+          ["step", "Produced"], ["derived", "Derived"],
+          ["pass", "Passed through"], ["receipt", "Receipts"],
+        ];
+
+        const openRuns = new Set();
+        const openSteps = new Set();
+        const openIos = new Set();
+        let jobsIndex = {};
         let runs = [];
 
         function badge(status) {
@@ -150,9 +175,13 @@
           return fmtDuration(end - Date.parse(run.startedAt));
         }
 
+        function stepContract(run, sr) {
+          const job = jobsIndex[run.jobId] || {};
+          return job[sr.stepId] || { name: sr.stepId, inputs: [], outputs: [] };
+        }
+
         function stepLabel(run, sr) {
-          const names = stepNames[run.jobId] || {};
-          return names[sr.stepId] || sr.stepId;
+          return stepContract(run, sr).name || sr.stepId;
         }
 
         function noteHtml(sr) {
@@ -176,20 +205,121 @@
           );
         }
 
+        function hasValues(bag) {
+          return !!bag && Object.keys(bag).length > 0;
+        }
+
+        function canExpandStep(sr) {
+          return hasValues(sr.inputs) || hasValues(sr.outputs);
+        }
+
+        function stepKey(run, sr) {
+          return run.id + "::" + sr.stepId;
+        }
+
+        function ioKey(run, sr, direction, key) {
+          return stepKey(run, sr) + "::" + direction + "::" + key;
+        }
+
         function stepRow(run, sr, i) {
+          const can = canExpandStep(sr);
+          const caret = '<span class="run-caret">' + (can ? (openSteps.has(stepKey(run, sr)) ? "▾" : "▸") : "") + "</span> ";
+          const attrs = can ? ' class="step-row step-row-x" data-step="' + esc(stepKey(run, sr)) + '"' : ' class="step-row"';
           return (
-            '<tr class="step-row">' +
+            "<tr" + attrs + ">" +
             statusCell(sr.status) +
-            '<td class="col-name step-indent">' + (i + 1) + ". " + esc(stepLabel(run, sr)) + noteHtml(sr) + "</td>" +
+            '<td class="col-name step-indent">' + caret + (i + 1) + ". " + esc(stepLabel(run, sr)) + noteHtml(sr) + "</td>" +
             '<td class="col-time">' + esc(stepRuntime(sr)) + "</td>" +
             "</tr>"
           );
         }
 
+        function stepRows(run, sr, i) {
+          const head = stepRow(run, sr, i);
+          if (!canExpandStep(sr) || !openSteps.has(stepKey(run, sr))) return head;
+          const contract = stepContract(run, sr);
+          return head +
+            groupRows(run, sr, "input", "Inputs", sr.inputs, contract.inputs) +
+            groupRows(run, sr, "output", "Outputs", sr.outputs, contract.outputs);
+        }
+
+        // Renders one direction (Inputs/Outputs): a section header, then a labelled
+        // sub-group per source that has values, then each value's collapsible row.
+        // Keys with no declared source land under "Other" so nothing is dropped.
+        function groupRows(run, sr, direction, label, values, contract) {
+          if (!hasValues(values)) return "";
+          const groups = direction === "input" ? INPUT_GROUPS : OUTPUT_GROUPS;
+          const source = sourceMap(contract);
+          const seen = new Set();
+          let html = sectionRow(label);
+          groups.forEach((g) => {
+            const keys = Object.keys(values).filter((k) => source[k] === g[0]);
+            keys.forEach((k) => seen.add(k));
+            if (keys.length) html += catRow(g[1]) + keys.map((k) => ioRows(run, sr, direction, k, ioOf(contract, k), values[k])).join("");
+          });
+          const rest = Object.keys(values).filter((k) => !seen.has(k));
+          if (rest.length) html += catRow("Other") + rest.map((k) => ioRows(run, sr, direction, k, ioOf(contract, k), values[k])).join("");
+          return html;
+        }
+
+        function ioRows(run, sr, direction, key, io, value) {
+          const k = ioKey(run, sr, direction, key);
+          const open = openIos.has(k);
+          return open ? ioRow(k, open, key, io) + valueRow(value) : ioRow(k, open, key, io);
+        }
+
+        function ioRow(k, open, key, io) {
+          const caret = '<span class="run-caret">' + (open ? "▾" : "▸") + "</span> ";
+          const type = io ? ' <span class="io-type">:' + esc(io.type) + "</span>" : "";
+          return (
+            '<tr class="io-row" data-io="' + esc(k) + '">' +
+            '<td class="col-status"></td>' +
+            '<td class="col-name io-key-indent">' + caret + "<code>" + esc(key) + "</code>" + type + sourceBadge(io) + descHtml(io) + "</td>" +
+            '<td class="col-time"></td>' +
+            "</tr>"
+          );
+        }
+
+        function valueRow(value) {
+          return '<tr class="io-value-row"><td colspan="3" class="io-value-indent"><pre class="io-value">' + esc(formatValue(value)) + "</pre></td></tr>";
+        }
+
+        function formatValue(value) {
+          return typeof value === "string" ? value : JSON.stringify(value);
+        }
+
+        function sourceBadge(io) {
+          if (!io || !io.source || io.source === "step") return "";
+          return ' <span class="io-src io-src-' + esc(io.source) + '">' + esc(io.source) + "</span>";
+        }
+
+        function descHtml(io) {
+          if (!io || !io.description) return "";
+          return ' <span class="text-muted small">' + esc(io.description) + "</span>";
+        }
+
+        function sectionRow(label) {
+          return '<tr class="io-section-row"><td class="col-status"></td><td class="col-name io-section-indent"><strong>' + esc(label) + '</strong></td><td class="col-time"></td></tr>';
+        }
+
+        function catRow(label) {
+          return '<tr class="io-cat-row"><td class="col-status"></td><td class="col-name io-cat-indent">' + esc(label) + '</td><td class="col-time"></td></tr>';
+        }
+
+        function sourceMap(contract) {
+          const map = {};
+          (contract || []).forEach((io) => { map[io.key] = io.source; });
+          return map;
+        }
+
+        function ioOf(contract, key) {
+          return (contract || []).find((io) => io.key === key) || null;
+        }
+
         function runRows(run) {
-          const open = expanded.has(run.id);
+          const open = openRuns.has(run.id);
           if (!open) return runRow(run, open);
-          return runRow(run, open) + run.stepRuns.map((sr, i) => stepRow(run, sr, i)).join("");
+          return runRow(run, open) + run.stepRuns.map((sr, i) => stepRows(run, sr, i)).join("");
         }
 
         function render() {
@@ -202,13 +332,21 @@
             '<table class="table table-hover runs-table">' + head + "<tbody>" + runs.map(runRows).join("") + "</tbody></table>";
         }
 
-        function toggle(ev) {
-          const head = ev.target.closest(".run-row");
-          if (!head) return;
-          const id = head.getAttribute("data-run");
-          if (expanded.has(id)) expanded.delete(id);
-          else expanded.add(id);
+        function flip(set, id) {
+          if (set.has(id)) set.delete(id);
+          else set.add(id);
           render();
+        }
+
+        // Most-specific row first: an io/step/run row is its own <tr>, so the
+        // deepest open level toggles without disturbing its ancestors.
+        function toggle(ev) {
+          const io = ev.target.closest(".io-row");
+          if (io) return flip(openIos, io.getAttribute("data-io"));
+          const step = ev.target.closest(".step-row-x");
+          if (step) return flip(openSteps, step.getAttribute("data-step"));
+          const run = ev.target.closest(".run-row");
+          if (run) return flip(openRuns, run.getAttribute("data-run"));
         }
 
         async function fetchJson(url) {
@@ -217,11 +355,11 @@
           return res.json();
         }
 
-        function indexStepNames(jobs) {
+        function indexJobs(jobs) {
           const map = {};
           jobs.forEach((job) => {
             map[job.id] = {};
-            job.steps.forEach((s) => { map[job.id][s.id] = s.name; });
+            job.steps.forEach((s) => { map[job.id][s.id] = { name: s.name, inputs: s.inputs || [], outputs: s.outputs || [] }; });
           });
           return map;
         }
@@ -241,7 +379,7 @@
 
         async function init() {
           try {
-            stepNames = indexStepNames(await fetchJson("/api/jobs"));
+            jobsIndex = indexJobs(await fetchJson("/api/jobs"));
           } catch (err) {
             console.error("[dashboard.init]", err);
           }

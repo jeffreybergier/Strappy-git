@@ -92,6 +92,45 @@ test("recordRun persists and round-trips a full LLM execution on a step run", ()
   assert.deepEqual(store.listRuns(), [run]);
 });
 
+test("recordRun round-trips a step run's resolved inputs and outputs across types", () => {
+  const db = openDatabase(":memory:");
+  const store = new SqliteJobStore(db);
+  store.saveJob({ id: "j", name: "J", description: "d", trigger: "manual", steps: [] });
+  const run: JobRun = {
+    id: "run-io",
+    jobId: "j",
+    status: "succeeded",
+    startedAt: "2026-06-06T00:00:00.000Z",
+    finishedAt: "2026-06-06T00:00:01.000Z",
+    stepRuns: [
+      {
+        stepId: "s",
+        status: "succeeded",
+        inputs: { repo: "o/r", issueNumber: 7 },
+        outputs: { pushed: true, prNumber: 42, prUrl: "https://x/y/42" },
+      },
+    ],
+  };
+  store.recordRun(run);
+  assert.deepEqual(store.listRuns(), [run]);
+});
+
+test("a step run without recorded IO values stays value-free after a round-trip", () => {
+  const db = openDatabase(":memory:");
+  const store = new SqliteJobStore(db);
+  store.saveJob({ id: "j", name: "J", description: "d", trigger: "manual", steps: [] });
+  store.recordRun({
+    id: "r",
+    jobId: "j",
+    status: "succeeded",
+    startedAt: "2026-06-06T00:00:00.000Z",
+    stepRuns: [{ stepId: "s", status: "succeeded" }],
+  });
+  const sr = store.listRuns()[0]?.stepRuns[0] ?? {};
+  assert.equal("inputs" in sr, false);
+  assert.equal("outputs" in sr, false);
+});
+
 test("a step run without an execution stays execution-free after a round-trip", () => {
   const db = openDatabase(":memory:");
   const store = new SqliteJobStore(db);

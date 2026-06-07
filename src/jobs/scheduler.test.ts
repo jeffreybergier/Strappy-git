@@ -65,6 +65,29 @@ test("a pass output is auto-filled from its input without the executor emitting 
   assert.deepEqual(seen, { token: "abc" });
 });
 
+test("a succeeded step run records its resolved inputs and produced outputs", async () => {
+  const registry = new StepKindRegistry()
+    .register("produce", () => ({ token: "abc" }))
+    .register("consume", () => ({}));
+  const chain = job("chain", [step("a", "produce", [], ["token"]), step("b", "consume", ["token"], [])]);
+  const run = await runJob(chain, {}, { registry });
+  assert.deepEqual(run.stepRuns[0]?.outputs, { token: "abc" });
+  assert.equal("inputs" in (run.stepRuns[0] ?? {}), false); // step a declares no inputs
+  assert.deepEqual(run.stepRuns[1]?.inputs, { token: "abc" });
+  assert.equal("outputs" in (run.stepRuns[1] ?? {}), false); // step b declares no outputs
+});
+
+test("a failed step still records the inputs it resolved before failing", async () => {
+  const registry = new StepKindRegistry()
+    .register("produce", () => ({ token: "abc" }))
+    .register("boom", () => { throw new Error("kaboom"); });
+  const chain = job("chain", [step("a", "produce", [], ["token"]), step("b", "boom", ["token"], [])]);
+  const run = await runJob(chain, {}, { registry });
+  assert.equal(run.stepRuns[1]?.status, "failed");
+  assert.deepEqual(run.stepRuns[1]?.inputs, { token: "abc" });
+  assert.equal("outputs" in (run.stepRuns[1] ?? {}), false); // never produced any
+});
+
 test("a value the previous step did not output is invisible to a later step (runtime adjacency)", async () => {
   const registry = new StepKindRegistry()
     .register("produce", () => ({ token: "abc" }))

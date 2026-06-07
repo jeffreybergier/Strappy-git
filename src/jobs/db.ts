@@ -5,6 +5,7 @@ import { createLogger } from "../logger.js";
 import { applySchema, SCHEMA_VERSION } from "./schema.js";
 import { asIoSource, asIoType } from "./io.js";
 import type {
+  IoValues,
   Job,
   JobRun,
   LlmExecution,
@@ -170,6 +171,8 @@ function hydrateStepRun(db: DatabaseSync, runId: string, r: Row): StepRun {
   const startedAt = textOrUndefined(r, "started_at");
   const finishedAt = textOrUndefined(r, "finished_at");
   const note = textOrUndefined(r, "note");
+  const inputs = readIOValues(db, runId, stepId, "input");
+  const outputs = readIOValues(db, runId, stepId, "output");
   const execution = readExecution(db, runId, stepId);
   return {
     stepId,
@@ -177,8 +180,23 @@ function hydrateStepRun(db: DatabaseSync, runId: string, r: Row): StepRun {
     ...(startedAt !== undefined && { startedAt }),
     ...(finishedAt !== undefined && { finishedAt }),
     ...(note !== undefined && { note }),
+    ...(inputs !== undefined && { inputs }),
+    ...(outputs !== undefined && { outputs }),
     ...(execution !== undefined && { execution }),
   };
+}
+
+// Returns undefined (not {}) when nothing was recorded, so a value-free step run
+// round-trips equal to one that never had values. JSON.parse restores each
+// value's original scalar type (string/number/integer/boolean).
+function readIOValues(db: DatabaseSync, runId: string, stepId: string, direction: IODirection): IoValues | undefined {
+  const rows = db
+    .prepare("SELECT key, value FROM step_io_values WHERE run_id = ? AND step_id = ? AND direction = ? ORDER BY position")
+    .all(runId, stepId, direction);
+  if (rows.length === 0) return undefined;
+  const values: IoValues = {};
+  for (const r of rows) values[text(r as Row, "key")] = JSON.parse(text(r as Row, "value"));
+  return values;
 }
 
 function readExecution(db: DatabaseSync, runId: string, stepId: string): LlmExecution | undefined {
@@ -301,7 +319,19 @@ function insertStepRun(db: DatabaseSync, runId: string, sr: StepRun, position: n
   db.prepare(
     "INSERT INTO step_runs (run_id, step_id, position, status, started_at, finished_at, note) VALUES (?, ?, ?, ?, ?, ?, ?)",
   ).run(runId, sr.stepId, position, sr.status, sr.startedAt ?? null, sr.finishedAt ?? null, sr.note ?? null);
+  if (sr.inputs) insertIOValues(db, runId, sr.stepId, "input", sr.inputs);
+  if (sr.outputs) insertIOValues(db, runId, sr.stepId, "output", sr.outputs);
   if (sr.execution) insertExecution(db, runId, sr.stepId, sr.execution);
+}
+
+// Persists a step's resolved IO bag as one JSON-encoded row per key, preserving
+// iteration order via `position` so a read-back orders stably.
+function insertIOValues(db: DatabaseSync, runId: string, stepId: string, direction: IODirection, values: IoValues): void {
+  Object.entries(values).forEach(([key, value], position) => {
+    db.prepare(
+      "INSERT INTO step_io_values (run_id, step_id, direction, position, key, value) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run(runId, stepId, direction, position, key, JSON.stringify(value));
+  });
 }
 
 function insertExecution(db: DatabaseSync, runId: string, stepId: string, exec: LlmExecution): void {

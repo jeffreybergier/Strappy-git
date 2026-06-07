@@ -76,12 +76,22 @@ export interface LlmExecution {
   usage: TokenUsage;
 }
 
+// Resolved per-run IO values for one step, keyed by StepIO.key. The scheduler
+// captures these from a step's resolved inputs and produced outputs so a recorded
+// run carries the real values that flowed through, not just status/timing.
+export type IoValues = Record<string, unknown>;
+
 export interface StepRun {
   stepId: string;
   status: StepStatus;
   startedAt?: string;
   finishedAt?: string;
   note?: string;
+  // Present only when the step recorded resolved values: a succeeded step carries
+  // both; a failed step keeps the inputs it resolved before failing. Empty bags
+  // are omitted so a value-free step round-trips equal to one that never had any.
+  inputs?: IoValues;
+  outputs?: IoValues;
   // Present only for LLM-backed steps that recorded a model call.
   execution?: LlmExecution;
 }

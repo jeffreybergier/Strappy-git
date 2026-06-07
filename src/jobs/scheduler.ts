@@ -58,14 +58,16 @@ async function runStep(step: ProcessStep, trigger: StepValues, previous: StepVal
   // Captured even if the step later fails, so a model call is always recorded.
   let execution: LlmExecution | undefined;
   const recordExecution = (e: LlmExecution): void => { execution = e; };
+  // Captured before the executor runs so a failed step still records its inputs.
+  let inputs: StepValues | undefined;
   try {
-    const inputs = resolveInputs(step, trigger, previous);
+    inputs = resolveInputs(step, trigger, previous);
     const produced = await registry.resolve(step.kind)({ step, inputs, recordExecution, runId });
     const outputs = buildOutputs(step, inputs, produced);
-    return { stepRun: { stepId: step.id, status: "succeeded", startedAt, finishedAt: now(), ...(execution && { execution }) }, outputs };
+    return { stepRun: { stepId: step.id, status: "succeeded", startedAt, finishedAt: now(), ...bag("inputs", inputs), ...bag("outputs", outputs), ...(execution && { execution }) }, outputs };
   } catch (error) {
     log.error("runStep", `step "${step.id}" failed`, error);
-    return { stepRun: { stepId: step.id, status: "failed", startedAt, finishedAt: now(), note: message(error), ...(execution && { execution }) } };
+    return { stepRun: { stepId: step.id, status: "failed", startedAt, finishedAt: now(), note: message(error), ...bag("inputs", inputs), ...(execution && { execution }) } };
   }
 }
 
@@ -114,6 +116,14 @@ function collectOutput(step: ProcessStep, io: StepIO, inputs: StepValues, produc
 
 function skip(step: ProcessStep): Outcome {
   return { stepRun: { stepId: step.id, status: "skipped" } };
+}
+
+// Attaches a resolved IO bag to a StepRun only when it carries values, so a step
+// with no inputs/outputs round-trips equal to a record that never had them
+// (deep-equal: { inputs: {} } !== {}). Mirrored by the db hydrate side.
+function bag(name: "inputs" | "outputs", values: StepValues | undefined): { inputs?: StepValues } | { outputs?: StepValues } {
+  if (values === undefined || Object.keys(values).length === 0) return {};
+  return { [name]: values };
 }
 
 // Runs the optional teardown on both the success and failure paths (finally), so
