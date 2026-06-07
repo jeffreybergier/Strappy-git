@@ -4,7 +4,13 @@ import { loadPrompt } from "./prompts.js";
 
 test("loadPrompt reads a step prompt from prompts/<name>.md", () => {
   const text = loadPrompt("implement-issue");
-  assert.match(text, /implementation/i);
+  assert.match(text, /issue/i);
+  assert.equal(text, text.trim());
+});
+
+test("loadPrompt reads the global personality prompt", () => {
+  const text = loadPrompt("personality");
+  assert.match(text, /Strappy/);
   assert.equal(text, text.trim());
 });
 

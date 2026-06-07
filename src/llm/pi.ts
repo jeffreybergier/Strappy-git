@@ -16,6 +16,7 @@ import type { TObject } from "typebox";
 import { config, requireOpenRouterKey } from "../config.js";
 import { createLogger } from "../logger.js";
 import type { LlmExecution, TokenUsage, ToolCallRecord } from "../jobs/types.js";
+import { loadPrompt } from "../jobs/prompts.js";
 
 // A step's structured result: the validated tool arguments (the step's typed
 // outputs) plus the full execution record for persistence.
@@ -33,6 +34,7 @@ type SessionEvent = Parameters<Parameters<AgentSession["subscribe"]>[0]>[0];
 
 let auth: AuthStorage | null = null;
 let registry: ModelRegistry | null = null;
+let personality: string | null = null;
 
 function getRegistry(): ModelRegistry {
   if (registry !== null) return registry;
@@ -186,7 +188,7 @@ export function reflectionPrompt(schema: TObject, toolName: string): string {
   ].join("\n");
 }
 
-async function openSession(systemPrompt?: string, customTools?: ToolDefinition[], cwd?: string): Promise<AgentSession> {
+async function openSession(stepPrompt?: string, customTools?: ToolDefinition[], cwd?: string): Promise<AgentSession> {
   const sessionCwd = cwd ?? process.cwd();
   const base = {
     model: resolveModel(),
@@ -194,7 +196,7 @@ async function openSession(systemPrompt?: string, customTools?: ToolDefinition[]
     authStorage: getAuth(),
     modelRegistry: getRegistry(),
     sessionManager: SessionManager.inMemory(),
-    ...(systemPrompt !== undefined && { resourceLoader: await cleanLoader(systemPrompt, sessionCwd) }),
+    resourceLoader: await cleanLoader(appendLayers(stepPrompt), sessionCwd),
   };
   // With customTools we omit the allowlist so the built-in read/write/edit/bash
   // tools stay active alongside the custom tool. Without them (plain text
@@ -204,16 +206,34 @@ async function openSession(systemPrompt?: string, customTools?: ToolDefinition[]
   return session;
 }
 
-// A resource loader carrying only our system prompt: no coding-agent base
-// prompt, no skills/extensions, and crucially no project context files (so the
-// model isn't fed the target repo's CLAUDE.md/AGENTS.md on a task-scoped step).
-async function cleanLoader(systemPrompt: string, cwd: string): Promise<DefaultResourceLoader> {
+// The system prompt is layered beneath pi's coding base: the global Strappy
+// persona first, then this step's own instructions (when it has any). Both ride
+// in appendSystemPrompt so pi's built-in tool guidance still leads.
+function appendLayers(stepPrompt?: string): string[] {
+  const layers = [loadPersonality()];
+  if (stepPrompt !== undefined) layers.push(stepPrompt);
+  return layers;
+}
+
+// The global Strappy persona, shared by every LLM step. Loaded once from
+// prompts/personality.md (throws loudly if missing/empty) and cached.
+function loadPersonality(): string {
+  if (personality !== null) return personality;
+  personality = loadPrompt("personality");
+  return personality;
+}
+
+// A resource loader that keeps pi's coding base (slot 1) and layers our persona
+// + per-step instructions beneath it via appendSystemPrompt — but drops skills,
+// extensions, and crucially project context files, so a task-scoped step is
+// never fed the cloned target repo's CLAUDE.md/AGENTS.md.
+async function cleanLoader(appendSystemPrompt: string[], cwd: string): Promise<DefaultResourceLoader> {
   const agentDir = getAgentDir();
   const loader = new DefaultResourceLoader({
     cwd,
     agentDir,
     settingsManager: SettingsManager.create(cwd, agentDir),
-    systemPrompt,
+    appendSystemPrompt,
     noContextFiles: true,
     noSkills: true,
     noPromptTemplates: true,
