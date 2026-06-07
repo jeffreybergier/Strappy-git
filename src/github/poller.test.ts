@@ -172,6 +172,32 @@ test("poller processes a whole pre-existing backlog (no time window)", async () 
   for (const n of [4, 5, 6]) assert.equal(store.isProcessed("o/r", n), true);
 });
 
+test("a backlog shows queued runs in the dashboard before they start", async () => {
+  let release!: () => void;
+  const barrier = new Promise<void>((resolve) => { release = resolve; });
+  // The queue runs jobs one at a time. Holding the first run open on a barrier
+  // keeps the second issue's run parked behind it, so it must read "queued".
+  const registry = new StepKindRegistry().register("wait", async () => {
+    await barrier;
+    return {};
+  });
+  const oneStep: Job = {
+    id: "process-issue",
+    name: "Process New Issue",
+    description: "",
+    trigger: "github.issue.opened",
+    steps: [{ id: "s1", kind: "wait", name: "s1", description: "", inputs: [], outputs: [] }],
+  };
+  const { store, poller } = setup(
+    { "o/r": [issue("o/r", 20, "jeffreybergier"), issue("o/r", 21, "jeffreybergier")] },
+    { job: oneStep, registry },
+  );
+  await poller.tick(); // both enqueued; the first run starts and blocks on the barrier
+  assert.deepEqual(store.listRuns().map((r) => r.status).sort(), ["queued", "running"]);
+  release();
+  await poller.whenIdle();
+});
+
 // ---- reply-triggered re-runs (watermark on the comment id) ------------------
 
 test("a whitelisted reply to a seen (open) issue re-triggers a fresh run", async () => {

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runJob } from "./scheduler.js";
+import { queuedRun, runJob } from "./scheduler.js";
 import { StepKindRegistry, defaultStepKinds } from "./stepKinds.js";
 import type { StepValues } from "./stepKinds.js";
 import { openDatabase } from "./db.js";
@@ -256,7 +256,9 @@ test("a run is persisted as 'running' before its steps finish, so the dashboard 
   let midRun: JobRun | undefined;
   const registry = new StepKindRegistry()
     .register("first", () => ({}))
-    // By the time the second step runs, step one is done and the run is persisted.
+    // Peeking from inside s2's executor: s1 is done, and s2 is marked running
+    // (and persisted) before its executor is invoked, so the dashboard shows it
+    // in progress rather than pending.
     .register("peek", () => {
       midRun = store.listRuns().find((r) => r.id === "run-live");
       return {};
@@ -267,7 +269,22 @@ test("a run is persisted as 'running' before its steps finish, so the dashboard 
   assert.ok(midRun, "the run should be visible while still in progress");
   assert.equal(midRun?.status, "running");
   assert.equal(midRun?.stepRuns.find((s) => s.stepId === "s1")?.status, "succeeded");
-  assert.equal(midRun?.stepRuns.find((s) => s.stepId === "s2")?.status, "pending");
+  assert.equal(midRun?.stepRuns.find((s) => s.stepId === "s2")?.status, "running");
+  assert.ok(midRun?.stepRuns.find((s) => s.stepId === "s2")?.startedAt, "an in-progress step carries a startedAt");
+});
+
+test("queuedRun builds a queued run with every step pending", () => {
+  const j = job("j", [step("a", "x", [], []), step("b", "y", [], [])]);
+  const run = queuedRun(j, "run-q", "2026-06-07T00:00:00.000Z");
+  assert.equal(run.status, "queued");
+  assert.equal(run.startedAt, "2026-06-07T00:00:00.000Z");
+  assert.deepEqual(run.stepRuns.map((s) => s.status), ["pending", "pending"]);
+});
+
+test("queuedRun validates its arguments", () => {
+  assert.throws(() => queuedRun(undefined as never, "id", "t"), /job must be a valid Job/);
+  assert.throws(() => queuedRun(job("j", []), "", "t"), /id must be a non-empty string/);
+  assert.throws(() => queuedRun(job("j", []), "id", ""), /startedAt must be a non-empty string/);
 });
 
 test("runJob validates its arguments", async () => {

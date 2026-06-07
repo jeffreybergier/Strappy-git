@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createLogger } from "../logger.js";
-import { runJob } from "../jobs/scheduler.js";
+import { queuedRun, runJob } from "../jobs/scheduler.js";
 import { SequentialQueue } from "../jobs/queue.js";
 import { StepKindRegistry } from "../jobs/stepKinds.js";
 import type { StepValues } from "../jobs/stepKinds.js";
@@ -184,6 +184,7 @@ export class IssuePoller {
     const jobUuid = randomUUID();
     const runId = formatRunId(issue.repo, issue.number, this.job.id, jobUuid);
     this.store.markProcessing(issue.repo, issue.number, runId, commentId);
+    this.store.recordRun(queuedRun(this.job, runId, new Date().toISOString())); // visible as queued until it starts
     this.queue.enqueue({ repo: issue.repo, issueNumber: issue.number, issueAuthor: issue.author, jobUuid, runId });
     log.info("enqueue", `${issue.repo}#${issue.number} queued (depth ${this.queue.size}, comment ${commentId})`);
   }

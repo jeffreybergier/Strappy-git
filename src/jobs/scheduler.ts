@@ -38,11 +38,19 @@ export async function runJob(job: Job, triggerInputs: StepValues, options: RunJo
   let failed = false;
   try {
     for (const [i, step] of job.steps.entries()) {
-      const outcome = failed ? skip(step) : await runStep(step, trigger, previous, options.registry, now, run.id);
+      if (failed) {
+        run.stepRuns[i] = skip(step).stepRun;
+        options.store?.recordRun(run);
+        continue;
+      }
+      const startedAt = now();
+      run.stepRuns[i] = { stepId: step.id, status: "running", startedAt };
+      options.store?.recordRun(run); // mark the step in progress so the dashboard shows it running
+      const outcome = await runStep(step, trigger, previous, options.registry, now, run.id, startedAt);
       run.stepRuns[i] = outcome.stepRun;
       if (outcome.stepRun.status === "failed") failed = true;
       else if (outcome.outputs) previous = outcome.outputs;
-      options.store?.recordRun(run); // re-persist after each step for live progress
+      options.store?.recordRun(run); // re-persist after the step finishes
     }
   } finally {
     await runCleanup(options.cleanup, trigger);
@@ -53,8 +61,7 @@ export async function runJob(job: Job, triggerInputs: StepValues, options: RunJo
   return run;
 }
 
-async function runStep(step: ProcessStep, trigger: StepValues, previous: StepValues, registry: StepKindRegistry, now: () => string, runId: string): Promise<Outcome> {
-  const startedAt = now();
+async function runStep(step: ProcessStep, trigger: StepValues, previous: StepValues, registry: StepKindRegistry, now: () => string, runId: string, startedAt: string): Promise<Outcome> {
   // Captured even if the step later fails, so a model call is always recorded.
   let execution: LlmExecution | undefined;
   const recordExecution = (e: LlmExecution): void => { execution = e; };
@@ -138,16 +145,29 @@ async function runCleanup(cleanup: RunJobOptions["cleanup"], trigger: StepValues
   }
 }
 
-// Seeds the run as "running" with every step pending, so the dashboard renders
-// the whole process map the instant a job starts and fills it in as steps run.
-function startRun(job: Job, id: string, startedAt: string): JobRun {
+// The run the poller persists at enqueue time so a job waiting behind others in
+// the queue is visible in the dashboard before its first step starts. Every step
+// is pending; startRun later flips it to "running" — re-stamping startedAt to the
+// real start — when execution actually begins.
+export function queuedRun(job: Job, id: string, startedAt: string): JobRun {
+  if (!job || typeof job.id !== "string" || !Array.isArray(job.steps)) {
+    throw new Error("[Scheduler.queuedRun] job must be a valid Job");
+  }
+  if (typeof id !== "string" || id.trim() === "") throw new Error("[Scheduler.queuedRun] id must be a non-empty string");
+  if (typeof startedAt !== "string" || startedAt.trim() === "") throw new Error("[Scheduler.queuedRun] startedAt must be a non-empty string");
   return {
     id,
     jobId: job.id,
-    status: "running",
+    status: "queued",
     startedAt,
     stepRuns: job.steps.map((step) => ({ stepId: step.id, status: "pending" })),
   };
+}
+
+// Seeds the run as "running" with every step pending, so the dashboard renders
+// the whole process map the instant a job starts and fills it in as steps run.
+function startRun(job: Job, id: string, startedAt: string): JobRun {
+  return { ...queuedRun(job, id, startedAt), status: "running" };
 }
 
 function finishRun(run: JobRun, failed: boolean, finishedAt: string): void {
