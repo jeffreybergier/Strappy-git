@@ -131,68 +131,23 @@ export async function runStructured(
   }
 }
 
-// The submit tool doubles as a one-shot reflection gate. Its execute defers to a
-// pure gate (createSubmitGate): the first call returns the double-check prompt and
-// keeps the loop running so the model must re-examine its work; the next call
-// finalizes (terminate). This wrapper only adapts the gate to the SDK's tool
-// result shape — the logic lives in the pure helper so it stays unit-testable.
+// The submit tool captures the step's typed outputs and ends the agent loop on
+// the first call. Self-review is not forced here — the model already gets
+// "always double check your work / compile / test" from its persona
+// (prompts/personality.md), so a mechanical second round-trip only re-sent the
+// whole growing context (cost) and added another window for a provider error.
 function buildSubmitTool(schema: TObject, toolName: string, capture: (args: Record<string, unknown>) => void): ToolDefinition {
-  const gate = createSubmitGate(schema, toolName, capture);
+  if (typeof capture !== "function") throw new Error("[PiClient.buildSubmitTool] capture must be a function");
   return defineTool({
     name: toolName,
     label: toolName,
-    description: "Report the result for this step when you believe you are done. You may be asked to double-check your work before it is finalized.",
+    description: "Report the result for this step when you are done.",
     parameters: schema,
     execute: async (_id, params) => {
-      const { text, terminate } = gate(params as Record<string, unknown>);
-      return { content: [{ type: "text", text }], details: params, terminate };
+      capture(params as Record<string, unknown>);
+      return { content: [{ type: "text", text: "recorded" }], details: params, terminate: true };
     },
   });
-}
-
-// One mandatory pass of self-review, modelled as a tiny state machine so it is
-// pure and unit-testable (no SDK tool signature needed). Every call captures the
-// latest args, so the answer is never lost if the model declines to resubmit; the
-// first call withholds termination and returns the checklist, any later call
-// finalizes. Bounded to a single extra pass by construction.
-export interface GateResult {
-  text: string;
-  terminate: boolean;
-}
-
-export function createSubmitGate(
-  schema: TObject,
-  toolName: string,
-  capture: (args: Record<string, unknown>) => void,
-): (args: Record<string, unknown>) => GateResult {
-  if (typeof capture !== "function") throw new Error("[PiClient.createSubmitGate] capture must be a function");
-  let calls = 0;
-  return (args) => {
-    calls += 1;
-    capture(args);
-    if (calls === 1) return { text: reflectionPrompt(schema, toolName), terminate: false };
-    return { text: "recorded", terminate: true };
-  };
-}
-
-// The double-check message returned on the first submit: a concrete checklist that
-// names the step's own required outputs (read off the submit schema) and prompts
-// the model to verify against the repo (build/tests) rather than assume. Grounded
-// reflection like this is where self-review actually helps a weaker model.
-export function reflectionPrompt(schema: TObject, toolName: string): string {
-  if (typeof toolName !== "string" || toolName.trim() === "") {
-    throw new Error("[PiClient.reflectionPrompt] toolName must be a non-empty string");
-  }
-  const keys = Object.keys(schema.properties);
-  if (keys.length === 0) throw new Error("[PiClient.reflectionPrompt] schema declares no outputs");
-  return [
-    "Before this is finalized, stop and double-check your work. Think hard:",
-    "- Did you do everything the task asked for?",
-    "- Did you verify your changes (run the build and the tests), not just assume they work?",
-    `- Are all required outputs present and correct: ${keys.join(", ")}?`,
-    "- Is there anything left to re-read or reconsider?",
-    `If anything is missing or wrong, fix it now. When you are confident it is complete and correct, call ${toolName} again to submit your final answer.`,
-  ].join("\n");
 }
 
 async function openSession(sm: SessionManager, stepPrompt?: string, customTools?: ToolDefinition[], cwd?: string): Promise<AgentSession> {

@@ -2,8 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
-import { Type } from "typebox";
-import { summarizeExecution, createStreamPrinter, logExecution, logValues, reflectionPrompt, createSubmitGate, transcriptSlug } from "./pi.js";
+import { summarizeExecution, createStreamPrinter, logExecution, logValues, transcriptSlug } from "./pi.js";
 import type { LlmExecution } from "../jobs/types.js";
 
 // Synthetic session events for the stream printer; cast past the SDK's event union.
@@ -69,44 +68,6 @@ test("createStreamPrinter labels streamed thinking distinctly from response text
   });
   assert.ok(lines.some((l) => l.includes("PiClient.think") && l.includes("weighing options")));
   assert.ok(lines.some((l) => l.includes("PiClient.text") && l.includes("final answer")));
-});
-
-test("reflectionPrompt names the step's required outputs and asks for a resubmit", () => {
-  const schema = Type.Object({ summary: Type.String(), prTitle: Type.String() });
-  const text = reflectionPrompt(schema, "submit_implement_issue");
-  assert.match(text, /double-check/i);
-  assert.ok(text.includes("summary") && text.includes("prTitle")); // the actual output keys
-  assert.ok(text.includes("submit_implement_issue")); // told which tool finalizes
-  assert.match(text, /run the build and the tests/i); // grounded, not vague
-});
-
-test("reflectionPrompt rejects an empty schema or blank tool name", () => {
-  assert.throws(() => reflectionPrompt(Type.Object({}), "submit_x"), /declares no outputs/);
-  assert.throws(() => reflectionPrompt(Type.Object({ a: Type.String() }), "  "), /toolName/);
-});
-
-test("createSubmitGate withholds the first submit for a reflection pass, then finalizes", () => {
-  let captured: Record<string, unknown> | undefined;
-  const schema = Type.Object({ summary: Type.String() });
-  const gate = createSubmitGate(schema, "submit_x", (a) => { captured = a; });
-
-  const first = gate({ summary: "draft" });
-  assert.equal(first.terminate, false); // does not finish the loop
-  assert.match(first.text, /double-check/i); // returns the checklist instead
-  assert.deepEqual(captured, { summary: "draft" }); // answer captured even pre-reflection
-
-  const second = gate({ summary: "final" });
-  assert.equal(second.terminate, true); // second call ends the loop
-  assert.equal(second.text, "recorded");
-  assert.deepEqual(captured, { summary: "final" }); // latest answer wins
-});
-
-test("createSubmitGate stays terminal after the first pass and validates its capture arg", () => {
-  const gate = createSubmitGate(Type.Object({ a: Type.String() }), "submit_x", () => {});
-  gate({ a: "1" }); // first: reflection
-  assert.equal(gate({ a: "2" }).terminate, true);
-  assert.equal(gate({ a: "3" }).terminate, true); // never reopens the gate
-  assert.throws(() => createSubmitGate(Type.Object({ a: Type.String() }), "submit_x", null as never), /capture must be a function/);
 });
 
 test("transcriptSlug turns a run id into a filename-safe stem (/ and # become -)", () => {
