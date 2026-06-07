@@ -55,7 +55,12 @@ export async function cloneRepo(input: CloneInput): Promise<string> {
   await fs.mkdir(input.baseDir, { recursive: true });
   const header = authHeader(input.token);
   const url = `https://github.com/${input.repo}.git`;
-  await runGit(["-c", header, "clone", "--depth", "1", url, dest], { secrets: [input.token, header] });
+  const secrets = [input.token, header];
+  await runGit(["-c", header, "clone", "--depth", "1", url, dest], { secrets });
+  // Init only direct submodules (non-recursive: no nested submodules) and keep
+  // them shallow. The -c header reaches submodule fetches via GIT_CONFIG_PARAMETERS;
+  // a submodule failure throws here, failing the job.
+  await runGit(["-C", dest, "-c", header, "submodule", "update", "--init", "--depth", "1"], { secrets });
   log.info("cloneRepo", `cloned ${input.repo} -> ${dest}`);
   return dest;
 }
