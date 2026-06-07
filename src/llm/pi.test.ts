@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { summarizeExecution, createStreamPrinter, logExecution, logValues, reflectionPrompt, createSubmitGate } from "./pi.js";
+import { summarizeExecution, createStreamPrinter, logExecution, logValues, reflectionPrompt, createSubmitGate, transcriptSlug } from "./pi.js";
 import type { LlmExecution } from "../jobs/types.js";
 
 // Synthetic session events for the stream printer; cast past the SDK's event union.
@@ -107,6 +107,17 @@ test("createSubmitGate stays terminal after the first pass and validates its cap
   assert.equal(gate({ a: "2" }).terminate, true);
   assert.equal(gate({ a: "3" }).terminate, true); // never reopens the gate
   assert.throws(() => createSubmitGate(Type.Object({ a: Type.String() }), "submit_x", null as never), /capture must be a function/);
+});
+
+test("transcriptSlug turns a run id into a filename-safe stem (/ and # become -)", () => {
+  const runId = "jeffreybergier/jeffreybergier.github.io#8/process-issue/8e6e2f89";
+  assert.equal(transcriptSlug(runId), "jeffreybergier-jeffreybergier.github.io-8-process-issue-8e6e2f89");
+});
+
+test("transcriptSlug preserves dots and existing dashes and rejects blanks", () => {
+  assert.equal(transcriptSlug("owner/repo#1/process-issue/abcdef12"), "owner-repo-1-process-issue-abcdef12");
+  assert.throws(() => transcriptSlug("   "), /runId must be a non-empty string/);
+  assert.throws(() => transcriptSlug(undefined as never), /runId must be a non-empty string/);
 });
 
 function exec(over: Partial<LlmExecution>): LlmExecution {

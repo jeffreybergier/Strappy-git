@@ -12,6 +12,9 @@ export interface StepContext {
   // LLM-backed executors call this to attach a full model execution to the
   // step's StepRun; non-LLM executors ignore it.
   recordExecution?: (execution: LlmExecution) => void;
+  // The JobRun id (Poller.formatRunId output). LLM-backed executors use it to
+  // name the saved HTML transcript; absent for runs that set none (seed/tests).
+  runId?: string;
 }
 
 // A reusable, named unit of step behavior: resolved inputs in, declared outputs

@@ -38,7 +38,7 @@ export async function runJob(job: Job, triggerInputs: StepValues, options: RunJo
   let failed = false;
   try {
     for (const [i, step] of job.steps.entries()) {
-      const outcome = failed ? skip(step) : await runStep(step, trigger, previous, options.registry, now);
+      const outcome = failed ? skip(step) : await runStep(step, trigger, previous, options.registry, now, run.id);
       run.stepRuns[i] = outcome.stepRun;
       if (outcome.stepRun.status === "failed") failed = true;
       else if (outcome.outputs) previous = outcome.outputs;
@@ -53,14 +53,14 @@ export async function runJob(job: Job, triggerInputs: StepValues, options: RunJo
   return run;
 }
 
-async function runStep(step: ProcessStep, trigger: StepValues, previous: StepValues, registry: StepKindRegistry, now: () => string): Promise<Outcome> {
+async function runStep(step: ProcessStep, trigger: StepValues, previous: StepValues, registry: StepKindRegistry, now: () => string, runId: string): Promise<Outcome> {
   const startedAt = now();
   // Captured even if the step later fails, so a model call is always recorded.
   let execution: LlmExecution | undefined;
   const recordExecution = (e: LlmExecution): void => { execution = e; };
   try {
     const inputs = resolveInputs(step, trigger, previous);
-    const produced = await registry.resolve(step.kind)({ step, inputs, recordExecution });
+    const produced = await registry.resolve(step.kind)({ step, inputs, recordExecution, runId });
     const outputs = buildOutputs(step, inputs, produced);
     return { stepRun: { stepId: step.id, status: "succeeded", startedAt, finishedAt: now(), ...(execution && { execution }) }, outputs };
   } catch (error) {

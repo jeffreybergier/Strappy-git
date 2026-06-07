@@ -10,6 +10,7 @@ type RunStructured = (
   schema: ReturnType<typeof outputsToSchema>,
   toolName: string,
   cwd: string,
+  runId: string | undefined,
 ) => Promise<StructuredResult>;
 
 // How to fill each harness-derived output from the recorded execution: keyed by
@@ -39,6 +40,7 @@ export function llmStepKind(run: RunStructured = runStructured): StepExecutor {
       schema,
       toolName(ctx),
       readInput(ctx, "workingDirectory"),
+      ctx.runId,
     );
     ctx.recordExecution?.(execution);
     return { ...values, ...derivedOutputs(ctx.step.outputs, execution) } as StepValues;

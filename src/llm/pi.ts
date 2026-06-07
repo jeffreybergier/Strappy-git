@@ -1,4 +1,8 @@
 import "dotenv/config";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import {
   AuthStorage,
   DefaultResourceLoader,
@@ -72,7 +76,7 @@ export async function runPrompt(prompt: string, systemPrompt?: string): Promise<
   }
   requireOpenRouterKey();
   try {
-    const session = await openSession(systemPrompt);
+    const session = await openSession(SessionManager.inMemory(), systemPrompt);
     log.info("runPrompt", `prompting ${config.openRouter.provider}/${config.openRouter.model}`);
     const execution = await collect(session, prompt);
     logExecution(execution);
@@ -94,6 +98,7 @@ export async function runStructured(
   schema: TObject,
   toolName: string,
   cwd: string,
+  runId?: string,
 ): Promise<StructuredResult> {
   if (typeof prompt !== "string" || prompt.trim() === "") {
     throw new Error("[PiClient.runStructured] prompt must be a non-empty string");
@@ -111,12 +116,14 @@ export async function runStructured(
   try {
     let values: Record<string, unknown> | undefined;
     const submit = buildSubmitTool(schema, toolName, (args) => { values = args; });
-    const session = await openSession(systemPrompt, [submit], cwd);
+    const sm = transcriptSession(cwd, runId);
+    const session = await openSession(sm, systemPrompt, [submit], cwd);
     log.info("runStructured", `prompting ${config.openRouter.provider}/${config.openRouter.model} for ${toolName} in ${cwd}`);
     const execution = await collect(session, prompt);
     logExecution(execution);
     if (values === undefined) throw new Error(`[PiClient.runStructured] model did not call ${toolName}`);
     logValues(values);
+    await saveTranscript(sm, runId, session);
     return { values, execution };
   } catch (error) {
     log.error("runStructured", "failed", error);
@@ -188,14 +195,14 @@ export function reflectionPrompt(schema: TObject, toolName: string): string {
   ].join("\n");
 }
 
-async function openSession(stepPrompt?: string, customTools?: ToolDefinition[], cwd?: string): Promise<AgentSession> {
+async function openSession(sm: SessionManager, stepPrompt?: string, customTools?: ToolDefinition[], cwd?: string): Promise<AgentSession> {
   const sessionCwd = cwd ?? process.cwd();
   const base = {
     model: resolveModel(),
     cwd: sessionCwd,
     authStorage: getAuth(),
     modelRegistry: getRegistry(),
-    sessionManager: SessionManager.inMemory(),
+    sessionManager: sm,
     resourceLoader: await cleanLoader(appendLayers(stepPrompt), sessionCwd),
   };
   // With customTools we omit the allowlist so the built-in read/write/edit/bash
@@ -204,6 +211,92 @@ async function openSession(stepPrompt?: string, customTools?: ToolDefinition[], 
   const opts = customTools ? { ...base, customTools } : { ...base, tools: [] };
   const { session } = await createAgentSession(opts);
   return session;
+}
+
+// pi's HTML exporter signature (it is not part of the package's public exports).
+// `state` is the live AgentState — passing it makes the report include the
+// resolved system prompt and tool schemas; undefined omits those two sections.
+type HtmlExporter = (
+  sm: SessionManager,
+  state: unknown,
+  options: { outputPath?: string; themeName?: string },
+) => Promise<string>;
+
+// Per-step transcript: with a runId the session is file-backed so it can be
+// rendered to HTML once the step finishes; without one it stays in memory (e.g.
+// plain runPrompt). The jsonl lives in a throwaway temp dir — only the rendered
+// report under data/sessions/ is kept.
+function transcriptSession(cwd: string, runId?: string): SessionManager {
+  if (runId === undefined || runId.trim() === "") return SessionManager.inMemory(cwd);
+  return SessionManager.create(cwd, mkdtempSync(join(tmpdir(), "strappy-session-")));
+}
+
+// Best-effort: render the finished session to data/sessions/<runId>.html with
+// pi's own exporter, then drop the temp jsonl. The live AgentState (session.state)
+// is passed so the report also captures the resolved system prompt and tool
+// schemas. Never throws — a transcript is a diagnostic artifact and must not fail
+// the job (e.g. the PR) it documents.
+async function saveTranscript(sm: SessionManager, runId: string | undefined, session: AgentSession): Promise<void> {
+  if (runId === undefined || runId.trim() === "") return;
+  try {
+    const exportHtml = await loadHtmlExporter();
+    const dir = sessionsDir();
+    mkdirSync(dir, { recursive: true });
+    const outputPath = join(dir, `${transcriptSlug(runId)}.html`);
+    await exportHtml(sm, session.state, { outputPath });
+    log.info("saveTranscript", `wrote HTML transcript ${outputPath}`);
+  } catch (error) {
+    log.warn("saveTranscript", `could not render transcript for ${runId}`, error);
+  } finally {
+    discardTempSession(sm);
+  }
+}
+
+// data/sessions/, anchored to the configured DB dir so it tracks DB_PATH.
+function sessionsDir(): string {
+  return join(dirname(config.dbPath), "sessions");
+}
+
+// The run id (owner/name#42/process-issue/<stem>) made filename-safe: every path
+// separator or non-portable char collapses to a dash, so "/" and "#" become "-"
+// while ".", "-" and alphanumerics survive (e.g. github.io stays intact).
+export function transcriptSlug(runId: string): string {
+  if (typeof runId !== "string" || runId.trim() === "") {
+    throw new Error("[PiClient.transcriptSlug] runId must be a non-empty string");
+  }
+  return runId.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+// pi's HTML exporter is not in the package's public exports, so reach it by its
+// on-disk path next to the resolved entry point and import the file directly
+// (Node's exports gate only applies to bare specifiers). Cached after first use.
+let htmlExporter: HtmlExporter | null = null;
+async function loadHtmlExporter(): Promise<HtmlExporter> {
+  if (htmlExporter !== null) return htmlExporter;
+  const resolve = (import.meta as unknown as { resolve?: (specifier: string) => string }).resolve;
+  if (typeof resolve !== "function") {
+    throw new Error("[PiClient.loadHtmlExporter] import.meta.resolve unavailable");
+  }
+  const distDir = dirname(fileURLToPath(resolve("@earendil-works/pi-coding-agent")));
+  const moduleUrl = pathToFileURL(join(distDir, "core/export-html/index.js")).href;
+  const mod = (await import(moduleUrl)) as { exportSessionToHtml?: HtmlExporter };
+  if (typeof mod.exportSessionToHtml !== "function") {
+    throw new Error("[PiClient.loadHtmlExporter] exportSessionToHtml missing (pi internal layout changed?)");
+  }
+  htmlExporter = mod.exportSessionToHtml;
+  return htmlExporter;
+}
+
+// Remove the throwaway jsonl dir once rendered. Guarded to temp paths so a
+// misconfiguration can never delete a real directory.
+function discardTempSession(sm: SessionManager): void {
+  const dir = sm.getSessionDir();
+  if (typeof dir !== "string" || !dir.startsWith(tmpdir())) return;
+  try {
+    rmSync(dir, { recursive: true, force: true });
+  } catch {
+    // best-effort cleanup
+  }
 }
 
 // The system prompt is layered beneath pi's coding base: the global Strappy
