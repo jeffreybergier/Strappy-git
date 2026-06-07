@@ -3,7 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 // Bump whenever SCHEMA_SQL changes shape. openDatabase() rebuilds an on-disk DB
 // stamped with an older version, so a stale file self-heals instead of crashing
 // on a column it predates (the data dir is disposable by design).
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 // Relational mirror of the ISO 9001 process-map model in types.ts.
 // process_steps keep `position` so ordered steps survive a round-trip;
@@ -89,11 +89,12 @@ CREATE TABLE IF NOT EXISTS step_executions (
 );
 
 CREATE TABLE IF NOT EXISTS processed_triggers (
-  repo         TEXT NOT NULL,
-  issue_number INTEGER NOT NULL,
-  run_id       TEXT,
-  status       TEXT NOT NULL,
-  processed_at TEXT NOT NULL,
+  repo            TEXT NOT NULL,
+  issue_number    INTEGER NOT NULL,
+  run_id          TEXT,
+  status          TEXT NOT NULL,
+  processed_at    TEXT NOT NULL,
+  last_comment_id INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (repo, issue_number)
 );
 `;

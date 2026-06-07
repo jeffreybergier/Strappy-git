@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { IssuePoller, isAllowedAuthor, formatRunId, failureNote, failureComment } from "./poller.js";
-import type { GitHubClient, IssueRef } from "./client.js";
+import type { GitHubClient, IssueComment, IssueRef } from "./client.js";
 import { openDatabase } from "../jobs/db.js";
 import { SqliteJobStore } from "../jobs/sqliteStore.js";
 import { defaultStepKinds, StepKindRegistry } from "../jobs/stepKinds.js";
@@ -55,36 +55,46 @@ function issue(repo: string, number: number, author: string): IssueRef {
 
 interface CapturedComment { repo: string; issueNumber: number; body: string; }
 
-// Only listAccessibleRepos + listOpenIssues are exercised under the stub
-// registry; the rest satisfy the interface but are never called — except
-// commentOnIssue, which records into the sink so failure-reporting is asserted.
-function fakeClient(issuesByRepo: Record<string, IssueRef[]>, comments: CapturedComment[]): GitHubClient {
+// Inbound comment threads, keyed "repo#number" — what listComments returns, so
+// tests can drop a whitelisted reply in and assert the re-trigger.
+type Thread = Record<string, IssueComment[]>;
+
+function comment(id: number, author: string, body: string): IssueComment {
+  return { id, author, body, createdAt: "2030-01-01T00:00:00.000Z" };
+}
+
+// listComments reads the inbound thread; commentOnIssue records into the outbound
+// sink so failure-reporting is asserted. The remaining methods satisfy the
+// interface but are never called under the stub registry.
+function fakeClient(issuesByRepo: Record<string, IssueRef[]>, posted: CapturedComment[], thread: Thread): GitHubClient {
   return {
     listAccessibleRepos: async () => Object.keys(issuesByRepo),
     listOpenIssues: async (repo) => issuesByRepo[repo] ?? [],
     getIssue: async () => { throw new Error("getIssue not used in stub run"); },
+    listComments: async (repo, issueNumber) => thread[`${repo}#${issueNumber}`] ?? [],
     getDefaultBranch: async () => "main",
     openPullRequest: async () => ({ number: 1, url: "x" }),
-    commentOnIssue: async (repo, issueNumber, body) => { comments.push({ repo, issueNumber, body }); return comments.length; },
+    commentOnIssue: async (repo, issueNumber, body) => { posted.push({ repo, issueNumber, body }); return posted.length; },
     closeIssue: async () => {},
   };
 }
 
-function setup(issuesByRepo: Record<string, IssueRef[]>, opts: { whitelist?: string[]; job?: Job; registry?: StepKindRegistry } = {}) {
+function setup(issuesByRepo: Record<string, IssueRef[]>, opts: { whitelist?: string[]; job?: Job; registry?: StepKindRegistry; thread?: Thread } = {}) {
   const db = openDatabase(":memory:");
   const store = new SqliteJobStore(db);
   const job = opts.job ?? processIssueJob();
   store.saveJob(job);
   const comments: CapturedComment[] = [];
+  const thread = opts.thread ?? {};
   const poller = new IssuePoller({
-    client: fakeClient(issuesByRepo, comments),
+    client: fakeClient(issuesByRepo, comments, thread),
     store,
     registry: opts.registry ?? defaultStepKinds(),
     job,
     whitelist: opts.whitelist ?? ["jeffreybergier"],
     intervalMs: 1000,
   });
-  return { store, poller, comments };
+  return { store, poller, comments, thread };
 }
 
 // A one-step job whose only step throws, so the poller's failure path runs
@@ -160,6 +170,53 @@ test("poller processes a whole pre-existing backlog (no time window)", async () 
   await poller.whenIdle();
   assert.equal(store.listRuns().length, 3);
   for (const n of [4, 5, 6]) assert.equal(store.isProcessed("o/r", n), true);
+});
+
+// ---- reply-triggered re-runs (watermark on the comment id) ------------------
+
+test("a whitelisted reply to a seen (open) issue re-triggers a fresh run", async () => {
+  const thread: Thread = {};
+  const { store, poller, comments } = setup(
+    { "o/r": [issue("o/r", 11, "jeffreybergier")] },
+    { job: failingJob(), registry: boomRegistry(), thread },
+  );
+  await poller.tick();
+  await poller.whenIdle();
+  assert.equal(store.listRuns().length, 1, "the new issue runs once");
+  assert.equal(comments.length, 1, "and posts one failure comment");
+  // A whitelisted human replies; the next tick sees a newer comment id.
+  thread["o/r#11"] = [comment(5, "jeffreybergier", "please try again")];
+  await poller.tick();
+  await poller.whenIdle();
+  assert.equal(store.listRuns().length, 2, "the reply re-triggers exactly one re-run");
+  assert.equal(store.lastProcessedComment("o/r", 11), 5, "and the watermark advances to it");
+});
+
+test("the same comment never re-triggers twice (watermark holds)", async () => {
+  const thread: Thread = { "o/r#13": [comment(3, "jeffreybergier", "context already here at creation")] };
+  const { store, poller } = setup(
+    { "o/r": [issue("o/r", 13, "jeffreybergier")] },
+    { job: failingJob(), registry: boomRegistry(), thread },
+  );
+  await poller.tick();
+  await poller.whenIdle();
+  await poller.tick(); // same thread, no newer comment
+  await poller.whenIdle();
+  assert.equal(store.listRuns().length, 1, "a comment present at first run is baselined, not re-fired");
+});
+
+test("a non-whitelisted reply does not re-trigger, no matter who posts", async () => {
+  const thread: Thread = {};
+  const { store, poller } = setup(
+    { "o/r": [issue("o/r", 14, "jeffreybergier")] },
+    { job: failingJob(), registry: boomRegistry(), thread },
+  );
+  await poller.tick();
+  await poller.whenIdle();
+  thread["o/r#14"] = [comment(9, "rando", "drive-by comment")];
+  await poller.tick();
+  await poller.whenIdle();
+  assert.equal(store.listRuns().length, 1, "an outsider's comment never raises the watermark");
 });
 
 // ---- failure reporting (post the error back to the issue, no LLM) -----------

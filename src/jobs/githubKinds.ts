@@ -2,7 +2,7 @@ import path from "node:path";
 import { StepKindRegistry } from "./stepKinds.js";
 import type { StepContext, StepValues } from "./stepKinds.js";
 import { llmStepKind } from "./llmKind.js";
-import type { GitHubClient } from "../github/client.js";
+import type { GitHubClient, IssueComment } from "../github/client.js";
 import * as git from "../github/git.js";
 
 export interface GitHubKindDeps {
@@ -47,14 +47,26 @@ export function githubStepKinds(deps: GitHubKindDeps): StepKindRegistry {
 }
 
 async function fetchIssue(deps: GitHubKindDeps, ctx: StepContext): Promise<StepValues> {
-  const issue = await deps.client.getIssue(str(ctx.inputs, "repo"), num(ctx.inputs, "issueNumber"));
-  return { userPrompt: buildPrompt(issue.title, issue.body) };
+  const repo = str(ctx.inputs, "repo");
+  const issueNumber = num(ctx.inputs, "issueNumber");
+  const issue = await deps.client.getIssue(repo, issueNumber);
+  const comments = await deps.client.listComments(repo, issueNumber);
+  return { userPrompt: buildPrompt(issue.title, issue.body, comments) };
 }
 
-// Renders the fetched issue into the user message the implement step prompts with.
-function buildPrompt(title: string, body: string): string {
+// Renders the issue and its whole comment thread into the user message the
+// implement step prompts with: title + body, then every comment verbatim, each
+// labeled with its author (a re-run reply lands here so the model sees the full
+// conversation, including its own prior PR/error comments — that history is the
+// point of a reply-triggered re-run).
+export function buildPrompt(title: string, body: string, comments: IssueComment[]): string {
+  if (typeof title !== "string" || title.trim() === "") throw new Error("[githubKinds.buildPrompt] title is required");
+  if (!Array.isArray(comments)) throw new Error("[githubKinds.buildPrompt] comments must be an array");
   const trimmed = body.trim();
-  return trimmed === "" ? `Title: ${title}` : `Title: ${title}\n\n${trimmed}`;
+  const head = trimmed === "" ? `Title: ${title}` : `Title: ${title}\n\n${trimmed}`;
+  if (comments.length === 0) return head;
+  const thread = comments.map((c) => `@${c.author}: ${c.body.trim()}`).join("\n\n");
+  return `${head}\n\n--- Comments ---\n\n${thread}`;
 }
 
 async function cloneRepo(deps: GitHubKindDeps, ctx: StepContext): Promise<StepValues> {

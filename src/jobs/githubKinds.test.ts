@@ -1,8 +1,42 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { prTitle, prBody, branchName } from "./githubKinds.js";
+import { prTitle, prBody, branchName, buildPrompt } from "./githubKinds.js";
+import type { IssueComment } from "../github/client.js";
 
 const usage = { model: "meta-llama/llama-3.3-70b-instruct", cost: 0.0234, inputTokens: 12304, outputTokens: 1872 };
+
+function comment(id: number, author: string, body: string): IssueComment {
+  return { id, author, body, createdAt: "2030-01-01T00:00:00.000Z" };
+}
+
+// ---- buildPrompt (issue + whole thread packaged into the user message) ------
+
+test("buildPrompt renders title + body when there are no comments", () => {
+  assert.equal(buildPrompt("Add retry", "Please add retry logic.", []), "Title: Add retry\n\nPlease add retry logic.");
+});
+
+test("buildPrompt renders title only when the body is blank", () => {
+  assert.equal(buildPrompt("Add retry", "   ", []), "Title: Add retry");
+});
+
+test("buildPrompt appends the thread verbatim, author-labeled, in order (Strappy's own included)", () => {
+  const out = buildPrompt("Add retry", "body", [
+    comment(1, "jeffreybergier", "first reply"),
+    comment(2, "strappy", "opened #21 for this"),
+    comment(3, "jeffreybergier", "that PR didn't build"),
+  ]);
+  assert.match(out, /--- Comments ---/);
+  const human = out.indexOf("@jeffreybergier: first reply");
+  const bot = out.indexOf("@strappy: opened #21 for this");
+  const followup = out.indexOf("@jeffreybergier: that PR didn't build");
+  assert.ok(human >= 0 && bot >= 0 && followup >= 0, "every comment is present");
+  assert.ok(human < bot && bot < followup, "comments keep thread order");
+});
+
+test("buildPrompt throws on invalid args", () => {
+  assert.throws(() => buildPrompt("", "b", []), /title is required/);
+  assert.throws(() => buildPrompt("t", "b", null as never), /comments must be an array/);
+});
 
 test("branchName builds strappy/issue-<n>/<uuid stem>", () => {
   assert.equal(branchName(8, "8e6e2f89-4dab-425b-93ca-3f49310dfe8e"), "strappy/issue-8/8e6e2f89");

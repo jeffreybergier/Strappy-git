@@ -355,8 +355,11 @@ function insertExecution(db: DatabaseSync, runId: string, stepId: string, exec: 
 }
 
 // ---- de-dupe ledger ---------------------------------------------------------
-// One row per (repo, issue) Strappy has acted on, so the continuous poller never
-// re-processes (and never re-opens a PR for) the same issue.
+// One row per (repo, issue) Strappy has acted on. last_comment_id is the id of
+// the newest whitelisted comment a run has consumed, so the poller re-runs only
+// for a strictly newer one — each new-issue/new-comment trigger fires exactly
+// once and the system can never self-trigger (its own comments aren't
+// whitelisted, so they never raise the mark).
 
 export function isTriggerProcessed(db: DatabaseSync, repo: string, issueNumber: number): boolean {
   if (typeof repo !== "string" || repo === "") throw new Error("[Db.isTriggerProcessed] repo must be a non-empty string");
@@ -365,13 +368,28 @@ export function isTriggerProcessed(db: DatabaseSync, repo: string, issueNumber: 
   return row !== undefined;
 }
 
-export function markTriggerProcessing(db: DatabaseSync, repo: string, issueNumber: number, runId: string): void {
+// The watermark: the newest whitelisted comment id already acted on, or 0 when
+// the issue has no row yet (so any real comment id clears it).
+export function lastProcessedComment(db: DatabaseSync, repo: string, issueNumber: number): number {
+  if (typeof repo !== "string" || repo === "") throw new Error("[Db.lastProcessedComment] repo must be a non-empty string");
+  if (!Number.isInteger(issueNumber)) throw new Error("[Db.lastProcessedComment] issueNumber must be an integer");
+  const row = db.prepare("SELECT last_comment_id FROM processed_triggers WHERE repo = ? AND issue_number = ?").get(repo, issueNumber);
+  if (row === undefined) return 0;
+  const value = (row as Row).last_comment_id;
+  if (typeof value !== "number") throw new Error("[Db.lastProcessedComment] last_comment_id must be a number");
+  return value;
+}
+
+// Claim a (re-)run: INSERT OR REPLACE so a re-trigger updates the same row with
+// the new run id and the comment id that triggered it (0 for a new-issue run).
+export function markTriggerProcessing(db: DatabaseSync, repo: string, issueNumber: number, runId: string, lastCommentId: number): void {
   if (typeof repo !== "string" || repo === "") throw new Error("[Db.markTriggerProcessing] repo must be a non-empty string");
   if (!Number.isInteger(issueNumber)) throw new Error("[Db.markTriggerProcessing] issueNumber must be an integer");
   if (typeof runId !== "string" || runId === "") throw new Error("[Db.markTriggerProcessing] runId must be a non-empty string");
+  if (!Number.isInteger(lastCommentId) || lastCommentId < 0) throw new Error("[Db.markTriggerProcessing] lastCommentId must be a non-negative integer");
   db.prepare(
-    "INSERT INTO processed_triggers (repo, issue_number, run_id, status, processed_at) VALUES (?, ?, ?, 'processing', ?)",
-  ).run(repo, issueNumber, runId, new Date().toISOString());
+    "INSERT OR REPLACE INTO processed_triggers (repo, issue_number, run_id, status, processed_at, last_comment_id) VALUES (?, ?, ?, 'processing', ?, ?)",
+  ).run(repo, issueNumber, runId, new Date().toISOString(), lastCommentId);
 }
 
 export function setTriggerStatus(db: DatabaseSync, repo: string, issueNumber: number, status: string): void {

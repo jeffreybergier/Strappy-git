@@ -20,10 +20,20 @@ export interface OpenPrInput {
   body: string;
 }
 
+// One issue comment. `id` is GitHub's monotonically-increasing comment id, used
+// as the poller's re-trigger watermark; `author` gates whether it can trigger.
+export interface IssueComment {
+  id: number;
+  author: string;
+  body: string;
+  createdAt: string;
+}
+
 export interface GitHubClient {
   listAccessibleRepos(): Promise<string[]>;
   listOpenIssues(repo: string): Promise<IssueRef[]>;
   getIssue(repo: string, issueNumber: number): Promise<IssueRef>;
+  listComments(repo: string, issueNumber: number): Promise<IssueComment[]>;
   getDefaultBranch(repo: string): Promise<string>;
   openPullRequest(input: OpenPrInput): Promise<{ number: number; url: string }>;
   commentOnIssue(repo: string, issueNumber: number, body: string): Promise<number>;
@@ -49,6 +59,7 @@ export function createGitHubClient(token: string): GitHubClient {
     listAccessibleRepos: () => listAccessibleRepos(octokit),
     listOpenIssues: (repo) => listOpenIssues(octokit, repo),
     getIssue: (repo, n) => getIssue(octokit, repo, n),
+    listComments: (repo, n) => listComments(octokit, repo, n),
     getDefaultBranch: (repo) => getDefaultBranch(octokit, repo),
     openPullRequest: (input) => openPullRequest(octokit, input),
     commentOnIssue: (repo, n, body) => commentOnIssue(octokit, repo, n, body),
@@ -102,6 +113,28 @@ async function getIssue(octokit: Octokit, repo: string, issueNumber: number): Pr
     log.error("getIssue", `failed for ${repo}#${issueNumber}`, error);
     throw error;
   }
+}
+
+// The full comment thread, oldest first (GitHub's default order), paginated so a
+// long thread is complete. A comment with no author is dropped — it can neither
+// trigger nor be attributed in the packaged prompt.
+async function listComments(octokit: Octokit, repo: string, issueNumber: number): Promise<IssueComment[]> {
+  const { owner, name } = parseRepo(repo);
+  try {
+    const comments = await octokit.paginate(octokit.issues.listComments, {
+      owner, repo: name, issue_number: issueNumber, per_page: 100,
+    });
+    return comments.filter((c) => c.user !== null && c.user !== undefined).map((c) => toComment(c));
+  } catch (error) {
+    log.error("listComments", `failed for ${repo}#${issueNumber}`, error);
+    throw error;
+  }
+}
+
+function toComment(c: { id: number; user: { login: string } | null; body?: string | null; created_at: string }): IssueComment {
+  const author = c.user?.login;
+  if (author === undefined) throw new Error(`[GitHub.toComment] comment ${c.id} has no author`);
+  return { id: c.id, author, body: c.body ?? "", createdAt: c.created_at };
 }
 
 async function getDefaultBranch(octokit: Octokit, repo: string): Promise<string> {

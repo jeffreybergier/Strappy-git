@@ -15,10 +15,13 @@ export interface JobWriteStore {
   recordRun(run: JobRun): void;
 }
 
-// De-dupe surface the poller uses so an issue is acted on at most once.
+// De-dupe surface the poller uses so each trigger (a new issue, or a new
+// whitelisted comment) is acted on exactly once. lastProcessedComment is the
+// watermark the poller compares the newest whitelisted comment against.
 export interface TriggerLedger {
   isProcessed(repo: string, issueNumber: number): boolean;
-  markProcessing(repo: string, issueNumber: number, runId: string): void;
+  lastProcessedComment(repo: string, issueNumber: number): number;
+  markProcessing(repo: string, issueNumber: number, runId: string, lastCommentId: number): void;
   setStatus(repo: string, issueNumber: number, status: string): void;
 }
 

@@ -267,11 +267,27 @@ test("trigger ledger detects and records processed issues", () => {
   const db = openDatabase(":memory:");
   const store = new SqliteJobStore(db);
   assert.equal(store.isProcessed("o/r", 5), false);
-  store.markProcessing("o/r", 5, "run-x");
+  store.markProcessing("o/r", 5, "run-x", 0);
   assert.equal(store.isProcessed("o/r", 5), true);
   assert.equal(store.isProcessed("o/r", 6), false);
   store.setStatus("o/r", 5, "done");
   assert.equal(store.isProcessed("o/r", 5), true);
+});
+
+test("trigger ledger tracks the last processed comment id and advances on re-run", () => {
+  const db = openDatabase(":memory:");
+  const store = new SqliteJobStore(db);
+  assert.equal(store.lastProcessedComment("o/r", 7), 0); // no row yet -> 0 clears any id
+  store.markProcessing("o/r", 7, "run-a", 0);            // new-issue run, baseline 0
+  assert.equal(store.lastProcessedComment("o/r", 7), 0);
+  store.markProcessing("o/r", 7, "run-b", 42);           // re-run claims a newer comment
+  assert.equal(store.lastProcessedComment("o/r", 7), 42);
+});
+
+test("markProcessing rejects a negative comment id", () => {
+  const db = openDatabase(":memory:");
+  const store = new SqliteJobStore(db);
+  assert.throws(() => store.markProcessing("o/r", 1, "run", -1), /lastCommentId must be a non-negative integer/);
 });
 
 test("constructor rejects a missing db", () => {

@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import {
   insertJob,
   isTriggerProcessed,
+  lastProcessedComment,
   markTriggerProcessing,
   readJob,
   readJobs,
@@ -49,8 +50,12 @@ export class SqliteJobStore implements JobReadStore, JobWriteStore, TriggerLedge
     return isTriggerProcessed(this.db, repo, issueNumber);
   }
 
-  markProcessing(repo: string, issueNumber: number, runId: string): void {
-    markTriggerProcessing(this.db, repo, issueNumber, runId);
+  lastProcessedComment(repo: string, issueNumber: number): number {
+    return lastProcessedComment(this.db, repo, issueNumber);
+  }
+
+  markProcessing(repo: string, issueNumber: number, runId: string, lastCommentId: number): void {
+    markTriggerProcessing(this.db, repo, issueNumber, runId, lastCommentId);
   }
 
   setStatus(repo: string, issueNumber: number, status: string): void {

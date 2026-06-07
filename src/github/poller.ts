@@ -64,7 +64,7 @@ export function failureComment(runId: string, detail: string): string {
     detail.trim(),
     "```",
     "",
-    "This is an automatic report (no AI wrote it, just the harness keeping it real). Sort the error above and re-open or re-file when you want me to take another swing. 🌈",
+    "This is an automatic report (no AI wrote it, just the harness keeping it real). Want me to take another swing? **Just reply here** — a comment from a whitelisted babe re-runs me on the whole thread. 🌈",
   ].join("\n");
 }
 
@@ -169,25 +169,50 @@ export class IssuePoller {
     try {
       const issues = await this.client.listOpenIssues(repo);
       log.info("pollRepo", `${repo}: ${issues.length} open issue(s)`);
-      for (const issue of issues) this.maybeEnqueue(issue);
+      for (const issue of issues) await this.maybeEnqueue(issue);
     } catch (error) {
       log.error("pollRepo", `failed for ${repo}`, error);
     }
   }
 
-  // The dedupe decision: whitelisted author + no ledger row yet. Claiming the
-  // row now stops the next tick from re-enqueuing while this one is pending.
-  private maybeEnqueue(issue: IssueRef): void {
-    if (!isAllowedAuthor(issue.author, this.whitelist)) {
-      log.info("skip", `${issue.repo}#${issue.number}: author @${issue.author} not whitelisted`);
-      return;
-    }
-    if (this.store.isProcessed(issue.repo, issue.number)) return;
+  // Enqueue at most one job per never-before-seen trigger. Claiming the row with
+  // the triggering comment id makes every later tick a no-op until a strictly
+  // newer whitelisted comment appears, so each trigger runs exactly once.
+  private async maybeEnqueue(issue: IssueRef): Promise<void> {
+    const commentId = await this.triggerCommentId(issue);
+    if (commentId === null) return;
     const jobUuid = randomUUID();
     const runId = formatRunId(issue.repo, issue.number, this.job.id, jobUuid);
-    this.store.markProcessing(issue.repo, issue.number, runId);
+    this.store.markProcessing(issue.repo, issue.number, runId, commentId);
     this.queue.enqueue({ repo: issue.repo, issueNumber: issue.number, issueAuthor: issue.author, jobUuid, runId });
-    log.info("enqueue", `${issue.repo}#${issue.number} queued (depth ${this.queue.size})`);
+    log.info("enqueue", `${issue.repo}#${issue.number} queued (depth ${this.queue.size}, comment ${commentId})`);
+  }
+
+  // The comment id to claim for this run, or null when nothing new should run. A
+  // brand-new issue (no ledger row) triggers on a whitelisted author and
+  // baselines to its newest whitelisted comment, so replies already present at
+  // creation ride along in the prompt instead of re-firing. An issue already seen
+  // re-triggers only on a whitelisted comment strictly newer than the watermark.
+  private async triggerCommentId(issue: IssueRef): Promise<number | null> {
+    if (!this.store.isProcessed(issue.repo, issue.number)) {
+      if (isAllowedAuthor(issue.author, this.whitelist)) return this.newestWhitelistedComment(issue);
+      log.info("skip", `${issue.repo}#${issue.number}: author @${issue.author} not whitelisted`);
+      return null;
+    }
+    const newest = await this.newestWhitelistedComment(issue);
+    return newest > this.store.lastProcessedComment(issue.repo, issue.number) ? newest : null;
+  }
+
+  // The id of the newest comment authored by a whitelisted user, or 0 if none.
+  // Strappy's own comments are not whitelisted, so they never raise this — the
+  // poller can never re-trigger off its own PR-link or error replies.
+  private async newestWhitelistedComment(issue: IssueRef): Promise<number> {
+    const comments = await this.client.listComments(issue.repo, issue.number);
+    let newest = 0;
+    for (const c of comments) {
+      if (c.id > newest && isAllowedAuthor(c.author, this.whitelist)) newest = c.id;
+    }
+    return newest;
   }
 
   private async runItem(item: QueueItem): Promise<void> {
