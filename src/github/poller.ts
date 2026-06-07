@@ -5,7 +5,7 @@ import { SequentialQueue } from "../jobs/queue.js";
 import { StepKindRegistry } from "../jobs/stepKinds.js";
 import type { StepValues } from "../jobs/stepKinds.js";
 import type { JobWriteStore, TriggerLedger } from "../jobs/store.js";
-import type { Job } from "../jobs/types.js";
+import type { Job, JobRun } from "../jobs/types.js";
 import { uuidStem } from "./git.js";
 import type { GitHubClient, IssueRef } from "./client.js";
 
@@ -29,6 +29,47 @@ export function formatRunId(repo: string, issueNumber: number, process: string, 
   if (!Number.isInteger(issueNumber)) throw new Error("[Poller.formatRunId] issueNumber must be an integer");
   if (typeof process !== "string" || process.trim() === "") throw new Error("[Poller.formatRunId] process must be a non-empty string");
   return `${repo}#${issueNumber}/${process}/${uuidStem(jobUuid)}`;
+}
+
+// The error to surface on the issue: the failed step's recorded note (its error
+// message), step-qualified, or a generic line when a run failed without one.
+// Reads straight off the recorded run, so no LLM is involved.
+export function failureNote(run: JobRun): string {
+  if (run === null || typeof run !== "object" || !Array.isArray(run.stepRuns)) {
+    throw new Error("[Poller.failureNote] run must be a JobRun");
+  }
+  const failed = run.stepRuns.find((s) => s.status === "failed");
+  if (failed === undefined) return "the run failed but no step reported an error";
+  const note = failed.note?.trim();
+  return note ? `step "${failed.stepId}" failed: ${note}` : `step "${failed.stepId}" failed`;
+}
+
+// The issue comment posted when a job fails: the run id plus the underlying error
+// in a fenced block (so it renders unambiguously), wrapped in Strappy's voice —
+// a github comment is human-facing. States nothing was pushed and that this is an
+// automatic report, so a human knows exactly what happened and can retry.
+export function failureComment(runId: string, detail: string): string {
+  if (typeof runId !== "string" || runId.trim() === "") {
+    throw new Error("[Poller.failureComment] runId must be a non-empty string");
+  }
+  if (typeof detail !== "string" || detail.trim() === "") {
+    throw new Error("[Poller.failureComment] detail must be a non-empty string");
+  }
+  return [
+    "💅 Ugh, babe — I rolled up my sleeves on this one but the job face-planted, so **nothing got pushed**.",
+    "",
+    `Run \`${runId}\` choked on:`,
+    "",
+    "```",
+    detail.trim(),
+    "```",
+    "",
+    "This is an automatic report (no AI wrote it, just the harness keeping it real). Sort the error above and re-open or re-file when you want me to take another swing. 🌈",
+  ].join("\n");
+}
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 interface QueueItem {
@@ -159,9 +200,23 @@ export class IssuePoller {
       );
       this.store.setStatus(item.repo, item.issueNumber, run.status);
       log.info("run", `${item.repo}#${item.issueNumber} -> ${run.status} (${item.runId})`);
+      if (run.status === "failed") await this.reportFailure(item, failureNote(run));
     } catch (error) {
       this.store.setStatus(item.repo, item.issueNumber, "failed");
       log.error("run", `${item.repo}#${item.issueNumber} crashed`, error);
+      await this.reportFailure(item, message(error));
+    }
+  }
+
+  // Best-effort: post the failure back to the issue so a human sees it without
+  // reading the server log. A comment failure is logged, never thrown — it must
+  // not crash the queue or mask the job failure it is reporting.
+  private async reportFailure(item: QueueItem, detail: string): Promise<void> {
+    try {
+      const id = await this.client.commentOnIssue(item.repo, item.issueNumber, failureComment(item.runId, detail));
+      log.info("reportFailure", `commented failure on ${item.repo}#${item.issueNumber} (comment ${id})`);
+    } catch (error) {
+      log.error("reportFailure", `could not comment on ${item.repo}#${item.issueNumber}`, error);
     }
   }
 }
