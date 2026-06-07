@@ -1,13 +1,13 @@
 import { DatabaseSync } from "node:sqlite";
 import {
   insertJob,
-  insertRun,
   isTriggerProcessed,
   markTriggerProcessing,
   readJob,
   readJobs,
   readRuns,
   setTriggerStatus,
+  upsertRun,
 } from "./db.js";
 import type { JobReadStore, JobWriteStore, TriggerLedger } from "./store.js";
 import type { Job, JobRun } from "./types.js";
@@ -42,7 +42,7 @@ export class SqliteJobStore implements JobReadStore, JobWriteStore, TriggerLedge
 
   recordRun(run: JobRun): void {
     if (!run) throw new Error("[SqliteJobStore.recordRun] run is required");
-    insertRun(this.db, run);
+    upsertRun(this.db, run);
   }
 
   isProcessed(repo: string, issueNumber: number): boolean {

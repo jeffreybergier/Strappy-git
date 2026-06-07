@@ -273,6 +273,18 @@ function insertIO(db: DatabaseSync, jobId: string, stepId: string, direction: IO
   ).run(jobId, stepId, direction, position, io.key, io.type, io.source, io.description, io.guidance ?? null);
 }
 
+// Idempotent record of one run: the existing row is deleted (the ON DELETE
+// CASCADE chain clears its step_runs + step_executions) and reinserted, so the
+// scheduler can persist the same run id repeatedly — first as "running", then
+// after each step, then finalized — and the dashboard sees it live.
+export function upsertRun(db: DatabaseSync, run: JobRun): void {
+  validateRun(run);
+  transaction(db, () => {
+    db.prepare("DELETE FROM job_runs WHERE id = ?").run(run.id);
+    insertRun(db, run);
+  });
+}
+
 export function insertRun(db: DatabaseSync, run: JobRun): void {
   validateRun(run);
   db.prepare("INSERT INTO job_runs (id, job_id, status, started_at, finished_at) VALUES (?, ?, ?, ?, ?)").run(

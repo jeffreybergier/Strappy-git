@@ -31,22 +31,23 @@ interface Outcome {
 export async function runJob(job: Job, triggerInputs: StepValues, options: RunJobOptions): Promise<JobRun> {
   validateArgs(job, triggerInputs, options);
   const now = options.now ?? isoNow;
-  const startedAt = now();
   const trigger: StepValues = { ...triggerInputs };
+  const run = startRun(job, (options.newRunId ?? defaultRunId)(), now());
+  options.store?.recordRun(run); // persist up front so the dashboard shows the job while it runs
   let previous: StepValues = {};
-  const stepRuns: StepRun[] = [];
   let failed = false;
   try {
-    for (const step of job.steps) {
+    for (const [i, step] of job.steps.entries()) {
       const outcome = failed ? skip(step) : await runStep(step, trigger, previous, options.registry, now);
-      stepRuns.push(outcome.stepRun);
+      run.stepRuns[i] = outcome.stepRun;
       if (outcome.stepRun.status === "failed") failed = true;
       else if (outcome.outputs) previous = outcome.outputs;
+      options.store?.recordRun(run); // re-persist after each step for live progress
     }
   } finally {
     await runCleanup(options.cleanup, trigger);
   }
-  const run = buildRun(job, startedAt, now(), failed, stepRuns, options.newRunId ?? defaultRunId);
+  finishRun(run, failed, now());
   options.store?.recordRun(run);
   log.info("runJob", `job "${job.id}" finished: ${run.status} (${run.id})`);
   return run;
@@ -127,15 +128,21 @@ async function runCleanup(cleanup: RunJobOptions["cleanup"], trigger: StepValues
   }
 }
 
-function buildRun(job: Job, startedAt: string, finishedAt: string, failed: boolean, stepRuns: StepRun[], newRunId: () => string): JobRun {
+// Seeds the run as "running" with every step pending, so the dashboard renders
+// the whole process map the instant a job starts and fills it in as steps run.
+function startRun(job: Job, id: string, startedAt: string): JobRun {
   return {
-    id: newRunId(),
+    id,
     jobId: job.id,
-    status: failed ? "failed" : "succeeded",
+    status: "running",
     startedAt,
-    finishedAt,
-    stepRuns,
+    stepRuns: job.steps.map((step) => ({ stepId: step.id, status: "pending" })),
   };
+}
+
+function finishRun(run: JobRun, failed: boolean, finishedAt: string): void {
+  run.status = failed ? "failed" : "succeeded";
+  run.finishedAt = finishedAt;
 }
 
 function validateArgs(job: Job, triggerInputs: StepValues, options: RunJobOptions): void {

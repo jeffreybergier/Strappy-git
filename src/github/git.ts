@@ -69,6 +69,17 @@ export async function removeDir(dir: string): Promise<void> {
   log.info("removeDir", `removed ${dir}`);
 }
 
+// First segment of a per-run UUID ("8e6e2f89-…" -> "8e6e2f89"): the short,
+// collision-proof stem shared by the run id (Poller.formatRunId) and the branch
+// name (githubKinds.branchName), so a branch always carries the same handle as
+// its JobRun and clone workspace.
+export function uuidStem(jobUuid: string): string {
+  if (typeof jobUuid !== "string" || jobUuid.trim() === "") {
+    throw new Error("[Git.uuidStem] jobUuid must be a non-empty string");
+  }
+  return jobUuid.split("-")[0] ?? jobUuid;
+}
+
 export async function createBranch(workdir: string, branch: string): Promise<void> {
   await runGit(["-C", workdir, "checkout", "-b", branch]);
   log.info("createBranch", `created ${branch}`);

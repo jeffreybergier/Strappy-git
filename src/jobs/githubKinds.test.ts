@@ -1,8 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { prTitle, prBody } from "./githubKinds.js";
+import { prTitle, prBody, branchName } from "./githubKinds.js";
 
 const usage = { model: "meta-llama/llama-3.3-70b-instruct", cost: 0.0234, inputTokens: 12304, outputTokens: 1872 };
+
+test("branchName builds strappy/issue-<n>/<uuid stem>", () => {
+  assert.equal(branchName(8, "8e6e2f89-4dab-425b-93ca-3f49310dfe8e"), "strappy/issue-8/8e6e2f89");
+});
+
+test("branchName rejects a non-integer issue number and a blank uuid", () => {
+  assert.throws(() => branchName(1.5, "8e6e2f89-4dab"), /issueNumber must be an integer/);
+  assert.throws(() => branchName(8, ""), /jobUuid must be a non-empty string/);
+});
 
 test("prTitle prefixes the model title and appends the issue link", () => {
   assert.equal(prTitle("Add retry logic to the HTTP client", 2), "Strappy: Add retry logic to the HTTP client (#2)");

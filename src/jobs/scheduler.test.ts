@@ -6,7 +6,7 @@ import type { StepValues } from "./stepKinds.js";
 import { openDatabase } from "./db.js";
 import { SqliteJobStore } from "./sqliteStore.js";
 import { seedJobs } from "./seed.js";
-import type { Job, LlmExecution, ProcessStep } from "./types.js";
+import type { Job, JobRun, LlmExecution, ProcessStep } from "./types.js";
 
 function fakeExecution(text: string): LlmExecution {
   return {
@@ -225,6 +225,26 @@ test("a throwing cleanup hook is swallowed and never changes the run result", as
     cleanup: () => { throw new Error("rm failed"); },
   });
   assert.equal(run.status, "succeeded");
+});
+
+test("a run is persisted as 'running' before its steps finish, so the dashboard shows it in progress", async () => {
+  const db = openDatabase(":memory:");
+  const store = new SqliteJobStore(db);
+  let midRun: JobRun | undefined;
+  const registry = new StepKindRegistry()
+    .register("first", () => ({}))
+    // By the time the second step runs, step one is done and the run is persisted.
+    .register("peek", () => {
+      midRun = store.listRuns().find((r) => r.id === "run-live");
+      return {};
+    });
+  const j = job("j", [step("s1", "first", [], []), step("s2", "peek", [], [])]);
+  store.saveJob(j);
+  await runJob(j, {}, { registry, store, newRunId: () => "run-live" });
+  assert.ok(midRun, "the run should be visible while still in progress");
+  assert.equal(midRun?.status, "running");
+  assert.equal(midRun?.stepRuns.find((s) => s.stepId === "s1")?.status, "succeeded");
+  assert.equal(midRun?.stepRuns.find((s) => s.stepId === "s2")?.status, "pending");
 });
 
 test("runJob validates its arguments", async () => {

@@ -66,9 +66,18 @@ async function cloneRepo(deps: GitHubKindDeps, ctx: StepContext): Promise<StepVa
 }
 
 async function createBranch(ctx: StepContext): Promise<StepValues> {
-  const newBranch = `strappy/issue-${num(ctx.inputs, "issueNumber")}`;
+  const newBranch = branchName(num(ctx.inputs, "issueNumber"), str(ctx.inputs, "jobUuid"));
   await git.createBranch(str(ctx.inputs, "workingDirectory"), newBranch);
   return { newBranch };
+}
+
+// The PR branch: strappy/issue-<n>/<uuid stem>. Reuses the run id's UUID stem
+// (git.uuidStem) so the branch ties back to its JobRun + clone workspace by eye,
+// and stays unique across re-runs of the same issue — the issue number alone is
+// not (a closed-and-reopened issue could collide).
+export function branchName(issueNumber: number, jobUuid: string): string {
+  if (!Number.isInteger(issueNumber)) throw new Error("[githubKinds.branchName] issueNumber must be an integer");
+  return `strappy/issue-${issueNumber}/${git.uuidStem(jobUuid)}`;
 }
 
 async function commitPush(deps: GitHubKindDeps, ctx: StepContext): Promise<StepValues> {

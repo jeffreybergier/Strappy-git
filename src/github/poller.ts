@@ -6,6 +6,7 @@ import { StepKindRegistry } from "../jobs/stepKinds.js";
 import type { StepValues } from "../jobs/stepKinds.js";
 import type { JobWriteStore, TriggerLedger } from "../jobs/store.js";
 import type { Job } from "../jobs/types.js";
+import { uuidStem } from "./git.js";
 import type { GitHubClient, IssueRef } from "./client.js";
 
 const log = createLogger("Poller");
@@ -27,9 +28,7 @@ export function formatRunId(repo: string, issueNumber: number, process: string, 
   if (typeof repo !== "string" || repo.trim() === "") throw new Error("[Poller.formatRunId] repo must be a non-empty string");
   if (!Number.isInteger(issueNumber)) throw new Error("[Poller.formatRunId] issueNumber must be an integer");
   if (typeof process !== "string" || process.trim() === "") throw new Error("[Poller.formatRunId] process must be a non-empty string");
-  if (typeof jobUuid !== "string" || jobUuid.trim() === "") throw new Error("[Poller.formatRunId] jobUuid must be a non-empty string");
-  const uuid8 = jobUuid.split("-")[0] ?? jobUuid;
-  return `${repo}#${issueNumber}/${process}/${uuid8}`;
+  return `${repo}#${issueNumber}/${process}/${uuidStem(jobUuid)}`;
 }
 
 interface QueueItem {

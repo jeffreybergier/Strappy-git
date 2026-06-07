@@ -202,6 +202,28 @@ test("recordRun + listRuns round-trips an execution", () => {
   assert.deepEqual(store.listRuns(), [run]);
 });
 
+test("recordRun is idempotent: re-recording the same run id transitions running -> succeeded", () => {
+  const db = openDatabase(":memory:");
+  const store = new SqliteJobStore(db);
+  store.saveJob({ id: "j", name: "J", description: "d", trigger: "manual", steps: [] });
+  const running: JobRun = {
+    id: "r1",
+    jobId: "j",
+    status: "running",
+    startedAt: "2026-06-06T00:00:00.000Z",
+    stepRuns: [{ stepId: "s", status: "running", startedAt: "2026-06-06T00:00:00.000Z" }],
+  };
+  store.recordRun(running);
+  const done: JobRun = {
+    ...running,
+    status: "succeeded",
+    finishedAt: "2026-06-06T00:00:05.000Z",
+    stepRuns: [{ stepId: "s", status: "succeeded", startedAt: "2026-06-06T00:00:00.000Z", finishedAt: "2026-06-06T00:00:05.000Z" }],
+  };
+  store.recordRun(done);
+  assert.deepEqual(store.listRuns(), [done]);
+});
+
 test("trigger ledger detects and records processed issues", () => {
   const db = openDatabase(":memory:");
   const store = new SqliteJobStore(db);
