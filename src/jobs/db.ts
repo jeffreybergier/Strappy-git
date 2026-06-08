@@ -205,6 +205,7 @@ function readExecution(db: DatabaseSync, runId: string, stepId: string): LlmExec
     .get(runId, stepId);
   if (row === undefined) return undefined;
   const thinking = textOrUndefined(row, "thinking");
+  const transcriptPath = textOrUndefined(row, "transcript_path");
   return {
     provider: text(row, "provider"),
     model: text(row, "model"),
@@ -218,6 +219,7 @@ function readExecution(db: DatabaseSync, runId: string, stepId: string): LlmExec
       totalTokens: integer(row, "total_tokens"),
       costTotal: real(row, "cost_total"),
     },
+    ...(transcriptPath !== undefined && { transcriptPath }),
   };
 }
 
@@ -337,7 +339,7 @@ function insertIOValues(db: DatabaseSync, runId: string, stepId: string, directi
 function insertExecution(db: DatabaseSync, runId: string, stepId: string, exec: LlmExecution): void {
   validateExecution(exec);
   db.prepare(
-    "INSERT INTO step_executions (run_id, step_id, provider, model, stop_reason, text, thinking, input_tokens, output_tokens, total_tokens, cost_total, tool_calls) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO step_executions (run_id, step_id, provider, model, stop_reason, text, thinking, input_tokens, output_tokens, total_tokens, cost_total, tool_calls, transcript_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
   ).run(
     runId,
     stepId,
@@ -351,6 +353,7 @@ function insertExecution(db: DatabaseSync, runId: string, stepId: string, exec: 
     exec.usage.totalTokens,
     exec.usage.costTotal,
     JSON.stringify(exec.toolCalls),
+    exec.transcriptPath ?? null,
   );
 }
 

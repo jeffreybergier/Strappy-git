@@ -33,6 +33,7 @@
       .runs-table td.col-time { font-family: monospace; color: #777; }
       .runs-table .run-row { cursor: pointer; }
       .runs-table .step-row > td { background-color: #fafafa; }
+      .transcript-link { margin-left: 6px; white-space: nowrap; }
       .runs-table .step-row-x { cursor: pointer; }
       .runs-table .step-indent { padding-left: 32px; }
       .run-caret { display: inline-block; width: 14px; color: #999; }
@@ -189,6 +190,17 @@
           return ' <span class="text-muted small">' + esc(sr.note) + "</span>";
         }
 
+        // A link to the step's rendered LLM transcript, when one was recorded.
+        // The stored value is a repo-relative file path (data/sessions/<file>);
+        // the basename maps to the /sessions static route the server mounts.
+        function transcriptHtml(sr) {
+          const path = sr.execution && sr.execution.transcriptPath;
+          if (!path) return "";
+          const file = String(path).split("/").pop();
+          return ' <a class="transcript-link small" href="/sessions/' + esc(encodeURIComponent(file)) +
+            '" target="_blank" rel="noopener" title="' + esc(path) + '">📄 transcript</a>';
+        }
+
         function statusCell(status) {
           return '<td class="col-status"><span class="label label-' + badge(status) + '">' + esc(status) + "</span></td>";
         }
@@ -228,7 +240,7 @@
           return (
             "<tr" + attrs + ">" +
             statusCell(sr.status) +
-            '<td class="col-name step-indent">' + caret + (i + 1) + ". " + esc(stepLabel(run, sr)) + noteHtml(sr) + "</td>" +
+            '<td class="col-name step-indent">' + caret + (i + 1) + ". " + esc(stepLabel(run, sr)) + noteHtml(sr) + transcriptHtml(sr) + "</td>" +
             '<td class="col-time">' + esc(stepRuntime(sr)) + "</td>" +
             "</tr>"
           );
@@ -341,6 +353,7 @@
         // Most-specific row first: an io/step/run row is its own <tr>, so the
         // deepest open level toggles without disturbing its ancestors.
         function toggle(ev) {
+          if (ev.target.closest("a")) return; // let links (e.g. transcript) act, not toggle the row
           const io = ev.target.closest(".io-row");
           if (io) return flip(openIos, io.getAttribute("data-io"));
           const step = ev.target.closest(".step-row-x");

@@ -74,6 +74,10 @@ export interface LlmExecution {
   thinking?: string;
   toolCalls: ToolCallRecord[];
   usage: TokenUsage;
+  // Repo-relative path to the rendered HTML transcript of this call
+  // (e.g. data/sessions/<run>-<step>.html), recorded for traceability. Absent on
+  // in-memory runs (no runId) or when transcript rendering failed.
+  transcriptPath?: string;
 }
 
 // Resolved per-run IO values for one step, keyed by StepIO.key. The scheduler

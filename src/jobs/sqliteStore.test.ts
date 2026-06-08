@@ -84,6 +84,7 @@ test("recordRun persists and round-trips a full LLM execution on a step run", ()
           thinking: "the title mentions a crash",
           toolCalls: [{ id: "c1", name: "applyLabels", arguments: { labels: ["bug"] } }],
           usage: { inputTokens: 1200, outputTokens: 64, totalTokens: 1264, costTotal: 0.00042 },
+          transcriptPath: "data/sessions/run-llm-ask.html",
         },
       },
     ],

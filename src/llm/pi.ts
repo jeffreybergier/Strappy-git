@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -134,13 +134,14 @@ export async function runStructured(
   requireOpenRouterKey();
   let sm: SessionManager | undefined;
   let session: AgentSession | undefined;
+  let execution: LlmExecution | undefined;
   try {
     let values: Record<string, unknown> | undefined;
     const submit = buildSubmitTool(schema, toolName, (args) => { values = args; });
     sm = transcriptSession(cwd, runId);
     session = await openSession(sm, systemPrompt, [submit], cwd, options?.builtinTools ?? true, options?.model);
     log.info("runStructured", `prompting ${config.openRouter.provider}/${config.openRouter.model} for ${toolName} in ${cwd}`);
-    const execution = await collect(session, prompt);
+    execution = await collect(session, prompt);
     logExecution(execution);
     if (values === undefined) throw new Error(`[PiClient.runStructured] model did not call ${toolName}`);
     logValues(values);
@@ -152,9 +153,15 @@ export async function runStructured(
     // Render the transcript on EVERY exit — success, an app-level block, a model
     // error, or a no-submit-call. A failed step is exactly when the session is
     // most worth keeping. Best-effort (saveTranscript never throws); when the
-    // session never opened, just discard the temp dir so it can't leak.
-    if (sm !== undefined && session !== undefined) await saveTranscript(sm, runId, session);
-    else if (sm !== undefined) discardTempSession(sm);
+    // session never opened, just discard the temp dir so it can't leak. The
+    // rendered path is stamped onto the execution so a recorded run links to the
+    // artifact (mutating execution here lands in the already-evaluated return).
+    if (sm !== undefined && session !== undefined) {
+      const transcriptPath = await saveTranscript(sm, runId, session);
+      if (execution !== undefined && transcriptPath !== undefined) execution.transcriptPath = transcriptPath;
+    } else if (sm !== undefined) {
+      discardTempSession(sm);
+    }
   }
 }
 
@@ -221,8 +228,8 @@ function transcriptSession(cwd: string, runId?: string): SessionManager {
 // is passed so the report also captures the resolved system prompt and tool
 // schemas. Never throws — a transcript is a diagnostic artifact and must not fail
 // the job (e.g. the PR) it documents.
-async function saveTranscript(sm: SessionManager, runId: string | undefined, session: AgentSession): Promise<void> {
-  if (runId === undefined || runId.trim() === "") return;
+async function saveTranscript(sm: SessionManager, runId: string | undefined, session: AgentSession): Promise<string | undefined> {
+  if (runId === undefined || runId.trim() === "") return undefined;
   try {
     const exportHtml = await loadHtmlExporter();
     const dir = sessionsDir();
@@ -230,15 +237,19 @@ async function saveTranscript(sm: SessionManager, runId: string | undefined, ses
     const outputPath = join(dir, `${transcriptSlug(runId)}.html`);
     await exportHtml(sm, session.state, { outputPath });
     log.info("saveTranscript", `wrote HTML transcript ${outputPath}`);
+    return relative(process.cwd(), outputPath);
   } catch (error) {
     log.warn("saveTranscript", `could not render transcript for ${runId}`, error);
+    return undefined;
   } finally {
     discardTempSession(sm);
   }
 }
 
-// data/sessions/, anchored to the configured DB dir so it tracks DB_PATH.
-function sessionsDir(): string {
+// data/sessions/, anchored to the configured DB dir so it tracks DB_PATH. Exported
+// so the server can serve this dir at /sessions and the stored transcript paths
+// resolve to a clickable link.
+export function sessionsDir(): string {
   return join(dirname(config.dbPath), "sessions");
 }
 

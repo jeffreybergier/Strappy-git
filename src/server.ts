@@ -10,6 +10,7 @@ import { seedJobs, seedRuns } from "./jobs/seed.js";
 import { dashboardRouter } from "./routes/dashboard.js";
 import { apiRouter } from "./routes/api.js";
 import { createGitHubClient } from "./github/client.js";
+import { sessionsDir } from "./llm/pi.js";
 import { githubStepKinds, githubCleanup } from "./jobs/githubKinds.js";
 import { IssuePoller } from "./github/poller.js";
 import { processIssueJob } from "./jobs/processIssueJob.js";
@@ -27,6 +28,9 @@ function createApp(store: JobReadStore): express.Express {
   const app = express();
   app.set("view engine", "ejs");
   app.set("views", path.resolve(process.cwd(), "views"));
+  // Serve rendered LLM transcripts so a step run's stored transcript_path
+  // (data/sessions/<run>-<step>.html) resolves to a clickable /sessions/ link.
+  app.use("/sessions", express.static(sessionsDir()));
   app.use("/", dashboardRouter(store));
   app.use("/api", apiRouter(store));
   return app;
