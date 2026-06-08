@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { llmStepKind } from "./llmKind.js";
 import type { StepContext } from "./stepKinds.js";
 import type { LlmExecution, ProcessStep } from "./types.js";
-import type { StructuredResult } from "../llm/pi.js";
+import type { RunStructuredOptions, StructuredResult } from "../llm/pi.js";
 
 function execution(): LlmExecution {
   return {
@@ -160,4 +160,52 @@ test("llmStepKind requires a workingDirectory input so the model runs in the clo
 
 test("llmStepKind rejects a non-function runner", () => {
   assert.throws(() => llmStepKind(123 as never), /run must be a function/);
+});
+
+test("llmStepKind forwards a given modelId to the runner as options.model (the review model)", async () => {
+  let seenOptions: RunStructuredOptions | undefined = { model: "UNSET" };
+  const kind = llmStepKind(async (_p, _s, _schema, _t, _cwd, _runId, options) => {
+    seenOptions = options;
+    return result({ reviewComment: "lgtm" });
+  }, "deepseek/deepseek-v4-pro");
+  await kind(ctx({ userPrompt: "review it", workingDirectory: "/tmp/r" }, ["reviewComment"]));
+  assert.deepEqual(seenOptions, { model: "deepseek/deepseek-v4-pro" });
+});
+
+test("llmStepKind passes no options when no modelId is given (the default model applies)", async () => {
+  let seenOptions: RunStructuredOptions | undefined = { model: "UNSET" };
+  const kind = llmStepKind(async (_p, _s, _schema, _t, _cwd, _runId, options) => {
+    seenOptions = options;
+    return result({ out: "x" });
+  });
+  await kind(ctx({ userPrompt: "go", workingDirectory: "/tmp/r" }, ["out"]));
+  assert.equal(seenOptions, undefined);
+});
+
+test("llmStepKind rejects a blank modelId", () => {
+  assert.throws(() => llmStepKind(undefined, "  "), /modelId, when provided, must be a non-empty string/);
+});
+
+test("llmStepKind qualifies the transcript runId with the step id so multiple LLM steps don't collide", async () => {
+  let seenRunId: string | undefined = "UNSET";
+  const kind = llmStepKind(async (_p, _s, _schema, _t, _cwd, runId) => {
+    seenRunId = runId;
+    return result({ out: "x" });
+  });
+  await kind({
+    step: step(["out"]),
+    inputs: { userPrompt: "go", workingDirectory: "/tmp/r" },
+    runId: "owner/repo#8/process-issue/8e6e2f89",
+  });
+  assert.equal(seenRunId, "owner/repo#8/process-issue/8e6e2f89/ask"); // step(["out"]).id === "ask"
+});
+
+test("llmStepKind leaves the transcript runId undefined when the run set none (kept in memory)", async () => {
+  let seenRunId: string | undefined = "UNSET";
+  const kind = llmStepKind(async (_p, _s, _schema, _t, _cwd, runId) => {
+    seenRunId = runId;
+    return result({ out: "x" });
+  });
+  await kind(ctx({ userPrompt: "go", workingDirectory: "/tmp/r" }, ["out"]));
+  assert.equal(seenRunId, undefined);
 });

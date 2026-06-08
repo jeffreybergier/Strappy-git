@@ -1,6 +1,7 @@
 import { runStructured } from "../llm/pi.js";
-import type { StructuredResult } from "../llm/pi.js";
+import type { RunStructuredOptions, StructuredResult } from "../llm/pi.js";
 import { outputsToSchema } from "../llm/schema.js";
+import { transcriptId } from "./stepKinds.js";
 import type { StepContext, StepExecutor, StepValues } from "./stepKinds.js";
 import type { LlmExecution, StepIO } from "./types.js";
 
@@ -11,6 +12,7 @@ type RunStructured = (
   toolName: string,
   cwd: string,
   runId: string | undefined,
+  options?: RunStructuredOptions,
 ) => Promise<StructuredResult>;
 
 // How to fill each harness-derived output from the recorded execution: keyed by
@@ -30,8 +32,13 @@ const DERIVED_OUTPUTS: Record<string, (execution: LlmExecution) => unknown> = {
 // the model-authored outputs via a generated submit tool, records the full
 // execution, and emits the validated arguments plus any harness-derived outputs.
 // runStructured is injected so the kind is unit-testable without a live API.
-export function llmStepKind(run: RunStructured = runStructured): StepExecutor {
+// modelId, when given, overrides the default model for this step (the review
+// step binds it to config.openRouter.reviewModel).
+export function llmStepKind(run: RunStructured = runStructured, modelId?: string): StepExecutor {
   if (typeof run !== "function") throw new Error("[llmStepKind] run must be a function");
+  if (modelId !== undefined && (typeof modelId !== "string" || modelId.trim() === "")) {
+    throw new Error("[llmStepKind] modelId, when provided, must be a non-empty string");
+  }
   return async (ctx) => {
     const schema = outputsToSchema(modelOutputs(ctx.step.outputs));
     const { values, execution } = await run(
@@ -40,7 +47,8 @@ export function llmStepKind(run: RunStructured = runStructured): StepExecutor {
       schema,
       toolName(ctx),
       readInput(ctx, "workingDirectory"),
-      ctx.runId,
+      transcriptId(ctx),
+      modelId !== undefined ? { model: modelId } : undefined,
     );
     ctx.recordExecution?.(execution);
     return { ...values, ...derivedOutputs(ctx.step.outputs, execution) } as StepValues;

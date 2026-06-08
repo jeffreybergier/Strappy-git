@@ -58,6 +58,7 @@ function startPoller(store: SqliteJobStore): void {
     token,
     tempDir: config.github.tempDir,
     committer: { name: config.github.committerName, email: config.github.committerEmail },
+    reviewModel: config.openRouter.reviewModel,
   };
   new IssuePoller({
     client,

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { prTitle, prBody, branchName, buildPrompt } from "./githubKinds.js";
+import { prTitle, prBody, reviewBody, branchName, buildPrompt } from "./githubKinds.js";
 import type { IssueComment } from "../github/client.js";
 
 const usage = { model: "meta-llama/llama-3.3-70b-instruct", cost: 0.0234, inputTokens: 12304, outputTokens: 1872 };
@@ -76,4 +76,18 @@ test("prBody formats cost to 4 decimals and thousands-separates tokens", () => {
 test("prBody rejects an empty summary and non-integer token counts", () => {
   assert.throws(() => prBody("   ", usage), /summary is required/);
   assert.throws(() => prBody("x", { ...usage, inputTokens: 1.5 }), /tokens must be an integer/);
+});
+
+// ---- reviewBody (the code-review comment posted on the PR) -------------------
+
+test("reviewBody wraps the comment in a heading over the same spend footer", () => {
+  assert.equal(
+    reviewBody("Looks solid, tests pass.", usage),
+    "## 🔍 Strappy code review\n\nLooks solid, tests pass.\n\n---\n🤖 Strappy · meta-llama/llama-3.3-70b-instruct\nLLM cost: $0.0234 · 12,304 in / 1,872 out tokens",
+  );
+});
+
+test("reviewBody trims the comment and rejects an empty one", () => {
+  assert.match(reviewBody("  ship it  ", usage), /## 🔍 Strappy code review\n\nship it\n\n---/);
+  assert.throws(() => reviewBody("   ", usage), /comment is required/);
 });

@@ -36,6 +36,9 @@ export interface RunStructuredOptions {
   // False runs SUBMIT-ONLY (no built-ins), for a step whose input is untrusted
   // and must never reach the filesystem/shell — the security gate.
   builtinTools?: boolean;
+  // Overrides the model for THIS call (default config.openRouter.model). The
+  // code-review step uses it to run a different reviewer model than implement.
+  model?: string;
 }
 
 const log = createLogger("PiClient");
@@ -62,11 +65,12 @@ function getAuth(): AuthStorage {
   return auth;
 }
 
-function resolveModel() {
-  const model = getRegistry().find(config.openRouter.provider, config.openRouter.model);
+function resolveModel(modelId?: string) {
+  const id = modelId ?? config.openRouter.model;
+  const model = getRegistry().find(config.openRouter.provider, id);
   if (model === undefined || model === null) {
     throw new Error(
-      `[PiClient.resolveModel] model not found: ${config.openRouter.provider}/${config.openRouter.model} (check config/models.json)`,
+      `[PiClient.resolveModel] model not found: ${config.openRouter.provider}/${id} (check config/models.json)`,
     );
   }
   return model;
@@ -124,6 +128,9 @@ export async function runStructured(
   if (systemPrompt !== undefined && (typeof systemPrompt !== "string" || systemPrompt.trim() === "")) {
     throw new Error("[PiClient.runStructured] systemPrompt, when provided, must be a non-empty string");
   }
+  if (options?.model !== undefined && (typeof options.model !== "string" || options.model.trim() === "")) {
+    throw new Error("[PiClient.runStructured] options.model, when provided, must be a non-empty string");
+  }
   requireOpenRouterKey();
   let sm: SessionManager | undefined;
   let session: AgentSession | undefined;
@@ -131,7 +138,7 @@ export async function runStructured(
     let values: Record<string, unknown> | undefined;
     const submit = buildSubmitTool(schema, toolName, (args) => { values = args; });
     sm = transcriptSession(cwd, runId);
-    session = await openSession(sm, systemPrompt, [submit], cwd, options?.builtinTools ?? true);
+    session = await openSession(sm, systemPrompt, [submit], cwd, options?.builtinTools ?? true, options?.model);
     log.info("runStructured", `prompting ${config.openRouter.provider}/${config.openRouter.model} for ${toolName} in ${cwd}`);
     const execution = await collect(session, prompt);
     logExecution(execution);
@@ -170,10 +177,10 @@ function buildSubmitTool(schema: TObject, toolName: string, capture: (args: Reco
   });
 }
 
-async function openSession(sm: SessionManager, stepPrompt?: string, customTools?: ToolDefinition[], cwd?: string, builtinTools = true): Promise<AgentSession> {
+async function openSession(sm: SessionManager, stepPrompt?: string, customTools?: ToolDefinition[], cwd?: string, builtinTools = true, modelId?: string): Promise<AgentSession> {
   const sessionCwd = cwd ?? process.cwd();
   const base = {
-    model: resolveModel(),
+    model: resolveModel(modelId),
     cwd: sessionCwd,
     authStorage: getAuth(),
     modelRegistry: getRegistry(),
@@ -235,7 +242,8 @@ function sessionsDir(): string {
   return join(dirname(config.dbPath), "sessions");
 }
 
-// The run id (owner/name#42/process-issue/<stem>) made filename-safe: every path
+// The run id (owner/name#42/process-issue/<stem>/<step>, step-qualified by the
+// kind so each LLM step gets its own file) made filename-safe: every path
 // separator or non-portable char collapses to a dash, so "/" and "#" become "-"
 // while ".", "-" and alphanumerics survive (e.g. github.io stays intact).
 export function transcriptSlug(runId: string): string {

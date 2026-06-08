@@ -21,6 +21,16 @@ export interface StepContext {
 // out (sync or async). The scheduler dispatches to one executor per step.
 export type StepExecutor = (ctx: StepContext) => StepValues | Promise<StepValues>;
 
+// The transcript id for a step's LLM call: the JobRun id qualified by the step
+// id, so each LLM-backed step renders its OWN data/sessions/*.html. The run id
+// alone collides — a run has several LLM steps (security scan, implement,
+// review) that would otherwise overwrite one file. undefined when the run set no
+// id (seed/tests), which keeps that session in memory.
+export function transcriptId(ctx: StepContext): string | undefined {
+  if (ctx.runId === undefined || ctx.runId.trim() === "") return undefined;
+  return `${ctx.runId}/${ctx.step.id}`;
+}
+
 // Maps step-kind keys to executors so a kind is defined once and reused across
 // jobs. register() returns this, so a registry composes in one expression.
 export class StepKindRegistry {
@@ -82,6 +92,7 @@ function stubValue(stepId: string, io: StepIO): unknown {
 export function defaultStepKinds(): StepKindRegistry {
   const registry = new StepKindRegistry()
     .register("llm", stubExecutor)
+    .register("llm.review", stubExecutor)
     .register("github.fetchIssue", stubExecutor)
     .register("security.scan", stubExecutor)
     .register("github.applyLabels", stubExecutor)
@@ -92,6 +103,7 @@ export function defaultStepKinds(): StepKindRegistry {
     .register("git.createBranch", stubExecutor)
     .register("git.commitPush", stubExecutor)
     .register("github.openPullRequest", stubExecutor)
+    .register("github.commentPr", stubExecutor)
     .register("github.commentIssue", stubExecutor)
     .register("github.closeIssue", stubExecutor);
   log.info("defaultStepKinds", `registered ${registry.list().length} step kinds`);

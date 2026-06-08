@@ -15,6 +15,10 @@ function listFromEnv(name: string): string[] {
   return raw.split(",").map((s) => s.trim()).filter((s) => s !== "");
 }
 
+// The default model id, shared by the implement step and used as the fallback
+// for the review step, so OPENROUTER_REVIEW_MODEL only has to be set to differ.
+const defaultModel = process.env.OPENROUTER_MODEL ?? "meta-llama/llama-3.3-70b-instruct";
+
 export const config = {
   port: intFromEnv("PORT", 3000),
   host: process.env.HOST ?? "0.0.0.0",
@@ -22,7 +26,10 @@ export const config = {
   dbPath: path.resolve(process.cwd(), process.env.DB_PATH ?? "data/strappy.sqlite"),
   openRouter: {
     provider: "openrouter",
-    model: process.env.OPENROUTER_MODEL ?? "meta-llama/llama-3.3-70b-instruct",
+    model: defaultModel,
+    // The code-review step runs against this model; defaults to the main model
+    // so a single-model setup still works. Must be declared in config/models.json.
+    reviewModel: process.env.OPENROUTER_REVIEW_MODEL ?? defaultModel,
     apiKeyEnv: "OPENROUTER_API_KEY",
   },
   github: {

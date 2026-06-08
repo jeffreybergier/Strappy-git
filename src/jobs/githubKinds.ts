@@ -11,6 +11,9 @@ export interface GitHubKindDeps {
   token: string;
   tempDir: string;
   committer: { name: string; email: string };
+  // Model id for the code-review step (config.openRouter.reviewModel). Kept on
+  // deps so the kind stays a pure function of its inputs — no global lookup.
+  reviewModel: string;
 }
 
 // Live registry for processIssueJob: the same kind keys defaultStepKinds() stubs,
@@ -42,8 +45,10 @@ export function githubStepKinds(deps: GitHubKindDeps): StepKindRegistry {
     .register("git.cloneRepo", (ctx) => cloneRepo(deps, ctx))
     .register("git.createBranch", (ctx) => createBranch(ctx))
     .register("llm", llmStepKind())
+    .register("llm.review", llmStepKind(undefined, deps.reviewModel))
     .register("git.commitPush", (ctx) => commitPush(deps, ctx))
     .register("github.openPullRequest", (ctx) => openPullRequest(deps, ctx))
+    .register("github.commentPr", (ctx) => commentPullRequest(deps, ctx))
     .register("github.commentIssue", (ctx) => commentIssue(deps, ctx))
     .register("github.closeIssue", (ctx) => closeIssue(deps, ctx));
 }
@@ -142,6 +147,14 @@ export function prBody(summary: string, usage: PrUsage): string {
   return `${summary.trim()}\n\n${usageFooter(usage)}`;
 }
 
+// The review model's comment, posted on the PR under a heading and over the same
+// spend footer the PR body uses — here it reports the REVIEW model's cost, not
+// the implement step's.
+export function reviewBody(comment: string, usage: PrUsage): string {
+  if (typeof comment !== "string" || comment.trim() === "") throw new Error("[githubKinds.reviewBody] comment is required");
+  return `## 🔍 Strappy code review\n\n${comment.trim()}\n\n${usageFooter(usage)}`;
+}
+
 function usageFooter(usage: PrUsage): string {
   const tokens = `${tokenCount(usage.inputTokens)} in / ${tokenCount(usage.outputTokens)} out tokens`;
   return `---\n🤖 Strappy · ${usage.model}\nLLM cost: ${money(usage.cost)} · ${tokens}`;
@@ -155,6 +168,22 @@ function money(cost: number): string {
 function tokenCount(tokens: number): string {
   if (!Number.isInteger(tokens)) throw new Error("[githubKinds.tokenCount] tokens must be an integer");
   return tokens.toLocaleString("en-US");
+}
+
+// Posts the review model's comment on the PR. GitHub models a PR as an issue, so
+// commentOnIssue(repo, prNumber, …) adds a normal PR conversation comment.
+async function commentPullRequest(deps: GitHubKindDeps, ctx: StepContext): Promise<StepValues> {
+  const commentId = await deps.client.commentOnIssue(
+    str(ctx.inputs, "repo"),
+    num(ctx.inputs, "prNumber"),
+    reviewBody(str(ctx.inputs, "reviewComment"), {
+      model: str(ctx.inputs, "model"),
+      cost: num(ctx.inputs, "cost"),
+      inputTokens: num(ctx.inputs, "inputTokens"),
+      outputTokens: num(ctx.inputs, "outputTokens"),
+    }),
+  );
+  return { commentId };
 }
 
 async function commentIssue(deps: GitHubKindDeps, ctx: StepContext): Promise<StepValues> {
@@ -189,4 +218,5 @@ function validateDeps(deps: GitHubKindDeps): void {
   if (typeof deps.token !== "string" || deps.token === "") throw new Error("[githubKinds] token is required");
   if (typeof deps.tempDir !== "string" || deps.tempDir === "") throw new Error("[githubKinds] tempDir is required");
   if (!deps.committer) throw new Error("[githubKinds] committer is required");
+  if (typeof deps.reviewModel !== "string" || deps.reviewModel === "") throw new Error("[githubKinds] reviewModel is required");
 }

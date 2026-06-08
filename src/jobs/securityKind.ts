@@ -3,6 +3,7 @@ import { runStructured } from "../llm/pi.js";
 import type { StructuredResult } from "../llm/pi.js";
 import { outputsToSchema } from "../llm/schema.js";
 import { createLogger } from "../logger.js";
+import { transcriptId } from "./stepKinds.js";
 import type { StepContext, StepExecutor, StepValues } from "./stepKinds.js";
 import type { StepIO } from "./types.js";
 
@@ -65,7 +66,7 @@ export function securityStepKind(run: RunStructured = runStructured): StepExecut
     // No built-in tools, so cwd binds nothing — it only anchors the transcript.
     const { values, execution } = await run(
       scanRequest(userPrompt), withToken(systemPrompt, token), outputsToSchema(VERDICT_SCHEMA),
-      VERDICT_TOOL, process.cwd(), ctx.runId, { builtinTools: false },
+      VERDICT_TOOL, process.cwd(), transcriptId(ctx), { builtinTools: false },
     );
     ctx.recordExecution?.(execution);
     verifyToken(values, token); // integrity before content: a forged call is rejected outright
