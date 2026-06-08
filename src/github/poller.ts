@@ -4,6 +4,7 @@ import { queuedRun, runJob } from "../jobs/scheduler.js";
 import { SequentialQueue } from "../jobs/queue.js";
 import { StepKindRegistry } from "../jobs/stepKinds.js";
 import type { StepValues } from "../jobs/stepKinds.js";
+import { promptCheckComment } from "../jobs/githubKinds.js";
 import type { JobWriteStore, TriggerLedger } from "../jobs/store.js";
 import type { Job, JobRun } from "../jobs/types.js";
 import { uuidStem } from "./git.js";
@@ -44,10 +45,12 @@ export function failureNote(run: JobRun): string {
   return note ? `step "${failed.stepId}" failed: ${note}` : `step "${failed.stepId}" failed`;
 }
 
-// The issue comment posted when a job fails: the run id plus the underlying error
-// in a fenced block (so it renders unambiguously), wrapped in Strappy's voice —
-// a github comment is human-facing. States nothing was pushed and that this is an
-// automatic report, so a human knows exactly what happened and can retry.
+// The issue comment posted when a generic job step fails (not the prompt check —
+// that gets its own promptCheckComment). This is fixed, harness-written text —
+// NOT the model's voice — so it stays plain and factual: faking Strappy's sass
+// here would put words in the mouth of a model that never spoke. The underlying
+// error is a verbatim ``` fence (it is a plain technical message, not markdown).
+// States nothing was pushed and how to retry, so a human knows what happened.
 export function failureComment(runId: string, detail: string): string {
   if (typeof runId !== "string" || runId.trim() === "") {
     throw new Error("[Poller.failureComment] runId must be a non-empty string");
@@ -56,15 +59,17 @@ export function failureComment(runId: string, detail: string): string {
     throw new Error("[Poller.failureComment] detail must be a non-empty string");
   }
   return [
-    "💅 Ugh, babe — I rolled up my sleeves on this one but the job face-planted, so **nothing got pushed**.",
+    "**⚠️ Job failed**",
     "",
-    `Run \`${runId}\` choked on:`,
+    "---",
+    "",
+    `Nothing was pushed. Run \`${runId}\` failed with:`,
     "",
     "```",
     detail.trim(),
     "```",
     "",
-    "This is an automatic report (no AI wrote it, just the harness keeping it real). Want me to take another swing? **Just reply here** — a comment from a whitelisted babe re-runs me on the whole thread. 🌈",
+    "This is an automatic report from the harness. To retry, reply here — a comment from a whitelisted user re-runs the job on the whole thread.",
   ].join("\n");
 }
 
@@ -226,23 +231,42 @@ export class IssuePoller {
       );
       this.store.setStatus(item.repo, item.issueNumber, run.status);
       log.info("run", `${item.repo}#${item.issueNumber} -> ${run.status} (${item.runId})`);
-      if (run.status === "failed") await this.reportFailure(item, failureNote(run));
+      if (run.status === "failed") await this.postComment(item, this.failureBody(item, run));
     } catch (error) {
       this.store.setStatus(item.repo, item.issueNumber, "failed");
       log.error("run", `${item.repo}#${item.issueNumber} crashed`, error);
-      await this.reportFailure(item, message(error));
+      await this.postComment(item, failureComment(item.runId, message(error)));
     }
   }
 
-  // Best-effort: post the failure back to the issue so a human sees it without
-  // reading the server log. A comment failure is logged, never thrown — it must
-  // not crash the queue or mask the job failure it is reporting.
-  private async reportFailure(item: QueueItem, detail: string): Promise<void> {
+  // The comment for a failed run: a prompt-check rejection gets its own
+  // "Prompt Check Failed" comment (the guard model's voiced reason as markdown);
+  // any other failure gets the generic harness report.
+  private failureBody(item: QueueItem, run: JobRun): string {
+    const rejection = this.promptCheckRejection(run);
+    return rejection !== null ? promptCheckComment(false, rejection) : failureComment(item.runId, failureNote(run));
+  }
+
+  // The guard model's voiced reason when THIS run failed at the security gate, or
+  // null for any other failure. Keys off the failed step's kind (security.scan),
+  // so it tracks the job definition rather than a hard-coded step id; the security
+  // step throws its reason as the error, so the recorded note carries it verbatim.
+  private promptCheckRejection(run: JobRun): string | null {
+    const failed = run.stepRuns.find((s) => s.status === "failed");
+    if (failed === undefined || !failed.note) return null;
+    const kind = this.job.steps.find((s) => s.id === failed.stepId)?.kind;
+    return kind === "security.scan" ? failed.note : null;
+  }
+
+  // Best-effort: post a comment back on the issue so a human sees the outcome
+  // without reading the server log. A comment failure is logged, never thrown — it
+  // must not crash the queue or mask the job failure it is reporting.
+  private async postComment(item: QueueItem, body: string): Promise<void> {
     try {
-      const id = await this.client.commentOnIssue(item.repo, item.issueNumber, failureComment(item.runId, detail));
-      log.info("reportFailure", `commented failure on ${item.repo}#${item.issueNumber} (comment ${id})`);
+      const id = await this.client.commentOnIssue(item.repo, item.issueNumber, body);
+      log.info("postComment", `commented on ${item.repo}#${item.issueNumber} (comment ${id})`);
     } catch (error) {
-      log.error("reportFailure", `could not comment on ${item.repo}#${item.issueNumber}`, error);
+      log.error("postComment", `could not comment on ${item.repo}#${item.issueNumber}`, error);
     }
   }
 }

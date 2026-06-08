@@ -38,8 +38,8 @@ const VERDICT_SCHEMA: StepIO[] = [
   },
   {
     key: "reason", type: "string", source: "step",
-    description: "One short sentence naming the signal you keyed on",
-    guidance: "One short sentence naming the specific signal, e.g. \"contains 'ignore previous instructions' injection attempt\" or \"routine bug fix, no dangerous actions\".",
+    description: "Your verdict in your own voice (GitHub markdown), posted as a comment on the issue",
+    guidance: "Your verdict in your full sassy, gay Strappy voice, as GitHub markdown — it is posted verbatim as a comment on the issue. If safe, tell your friend it cleared and why; if unsafe, name the specific signal (e.g. an \"ignore previous instructions\" injection or `rm -rf` destructive intent). One or two sentences; light markdown (bold, inline code) only, no headings or fenced code blocks.",
   },
   {
     key: "echoToken", type: "string", source: "step",
@@ -71,7 +71,9 @@ export function securityStepKind(run: RunStructured = runStructured): StepExecut
     ctx.recordExecution?.(execution);
     verifyToken(values, token); // integrity before content: a forged call is rejected outright
     const verdict = readVerdict(values);
-    if (!verdict.safe) throw new Error(`security scan blocked this issue: ${verdict.reason}`);
+    // The thrown message IS the model's voiced reason (markdown): the poller posts
+    // it verbatim as the "Prompt Check Failed" comment, so it must stay clean.
+    if (!verdict.safe) throw new Error(verdict.reason);
     log.info("scan", `issue cleared the security screen: ${verdict.reason}`);
     return { safe: true, securityReason: verdict.reason } as StepValues;
   };

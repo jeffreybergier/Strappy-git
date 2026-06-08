@@ -95,6 +95,7 @@ export function defaultStepKinds(): StepKindRegistry {
     .register("llm.review", stubExecutor)
     .register("github.fetchIssue", stubExecutor)
     .register("security.scan", stubExecutor)
+    .register("github.commentSecurity", stubExecutor)
     .register("github.applyLabels", stubExecutor)
     .register("github.postComment", stubExecutor)
     .register("github.fetchDiff", stubExecutor)

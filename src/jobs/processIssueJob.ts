@@ -39,7 +39,9 @@ const REVIEW_GUIDANCE =
 
 // Implementation flow: fetch the issue, screen it for prompt-injection /
 // dangerous instructions (the security gate, which blocks the run before any
-// clone/edit/push if it judges the issue unsafe), clone the repo, branch, run the
+// clone/edit/push if it judges the issue unsafe), post the gate's verdict back
+// on the issue so the human knows it cleared and work is starting, clone the
+// repo, branch, run the
 // LLM implementation step (it edits the clone and returns a commit message + PR
 // title + PR summary, and Pi's reported model/cost/tokens are derived alongside),
 // then commit/push, open a PR from the model's title + summary (with an LLM-cost
@@ -69,9 +71,16 @@ export function processIssueJob(): Job {
         [io("systemPrompt", "string", "static", "Static instructions (loaded from prompts/security-check.md)"),
           io("userPrompt", "string", "pass", "Issue text to screen, carried on to the clone step")],
         [io("safe", "boolean", "receipt", "Terminal: the issue passed the security screen"),
-          io("securityReason", "string", "receipt", "Terminal: the guard model's one-line justification"),
-          io("userPrompt", "string", "pass", "Carried to the clone step")],
+          io("securityReason", "string", "step", "The guard model's voiced verdict, posted on the issue by the next step"),
+          io("userPrompt", "string", "pass", "Carried to the comment + clone steps")],
         loadPrompt("security-check")),
+      step("comment-security", "github.commentSecurity", "Comment Security Verdict",
+        "Post the security gate's verdict on the issue (it passed) and that implementation is now underway.",
+        [io("repo", "string", "trigger", "owner/name"), io("issueNumber", "number", "trigger", "Issue number"),
+          io("securityReason", "string", "step", "The guard model's voiced verdict from the security step"),
+          io("userPrompt", "string", "pass", "Carried to the clone step")],
+        [io("commentId", "number", "receipt", "Terminal: the security-verdict comment was created"),
+          io("userPrompt", "string", "pass", "Carried to the clone step")]),
       step("clone-repo", "git.cloneRepo", "Clone Repo",
         "Clone into <tempDir>/jobs/<uuid>/<reponame> so the model can explore it.",
         [io("repo", "string", "trigger", "owner/name"), io("jobUuid", "string", "trigger", "Per-job UUID"),

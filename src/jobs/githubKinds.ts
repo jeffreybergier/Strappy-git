@@ -42,6 +42,7 @@ export function githubStepKinds(deps: GitHubKindDeps): StepKindRegistry {
   return new StepKindRegistry()
     .register("github.fetchIssue", (ctx) => fetchIssue(deps, ctx))
     .register("security.scan", securityStepKind())
+    .register("github.commentSecurity", (ctx) => commentSecurity(deps, ctx))
     .register("git.cloneRepo", (ctx) => cloneRepo(deps, ctx))
     .register("git.createBranch", (ctx) => createBranch(ctx))
     .register("llm", llmStepKind())
@@ -147,12 +148,27 @@ export function prBody(summary: string, usage: PrUsage): string {
   return `${summary.trim()}\n\n${usageFooter(usage)}`;
 }
 
-// The review model's comment, posted on the PR under a heading and over the same
-// spend footer the PR body uses — here it reports the REVIEW model's cost, not
-// the implement step's.
+// The review model's comment, posted on the PR under a bold heading (our
+// static-heading convention) and over the same spend footer the PR body uses —
+// here it reports the REVIEW model's cost, not the implement step's.
 export function reviewBody(comment: string, usage: PrUsage): string {
   if (typeof comment !== "string" || comment.trim() === "") throw new Error("[githubKinds.reviewBody] comment is required");
-  return `## 🔍 Strappy code review\n\n${comment.trim()}\n\n${usageFooter(usage)}`;
+  return `**🔍 Strappy code review**\n\n${comment.trim()}\n\n${usageFooter(usage)}`;
+}
+
+// The prompt-check verdict comment: a bold "Prompt Check Passed/Failed" heading
+// (our static-heading convention — bold, not a `#` heading), a horizontal rule,
+// then the guard model's own voiced reason as pure markdown (it renders — no code
+// fence or blockquote around it). Shared by both outcomes: the safe path posts it
+// from the comment step (passed = true); the unsafe path posts it from the poller
+// (passed = false), since the security step throws to fail closed.
+export function promptCheckComment(passed: boolean, reason: string): string {
+  if (typeof passed !== "boolean") throw new Error("[githubKinds.promptCheckComment] passed must be a boolean");
+  if (typeof reason !== "string" || reason.trim() === "") {
+    throw new Error("[githubKinds.promptCheckComment] reason is required");
+  }
+  const heading = passed ? "✅ Prompt Check Passed" : "🚫 Prompt Check Failed";
+  return `**${heading}**\n\n---\n\n${reason.trim()}`;
 }
 
 function usageFooter(usage: PrUsage): string {
@@ -182,6 +198,18 @@ async function commentPullRequest(deps: GitHubKindDeps, ctx: StepContext): Promi
       inputTokens: num(ctx.inputs, "inputTokens"),
       outputTokens: num(ctx.inputs, "outputTokens"),
     }),
+  );
+  return { commentId };
+}
+
+// Posts the "Prompt Check Passed" verdict on the issue once it clears. Only
+// reached on the safe path — an unsafe verdict throws in the security step, and
+// the poller posts the matching "Prompt Check Failed" comment instead.
+async function commentSecurity(deps: GitHubKindDeps, ctx: StepContext): Promise<StepValues> {
+  const commentId = await deps.client.commentOnIssue(
+    str(ctx.inputs, "repo"),
+    num(ctx.inputs, "issueNumber"),
+    promptCheckComment(true, str(ctx.inputs, "securityReason")),
   );
   return { commentId };
 }

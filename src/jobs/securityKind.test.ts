@@ -68,11 +68,13 @@ test("securityStepKind asks for a submit-only verdict, injects the token, clears
   assert.deepEqual(recorded, execution());
 });
 
-test("securityStepKind throws (blocking the run) on an unsafe verdict, surfacing the reason", async () => {
-  const kind = securityStepKind(runReturning({ safe: false, reason: "contains ignore previous instructions" }));
+test("securityStepKind throws (blocking the run) on an unsafe verdict, surfacing the raw reason as the error", async () => {
+  const kind = securityStepKind(runReturning({ safe: false, reason: "contains **ignore previous instructions** injection" }));
+  // The reason is thrown verbatim (no prefix) so the poller can post it as the
+  // "Prompt Check Failed" comment with its markdown intact.
   await assert.rejects(
     async () => { await kind(ctx(SAFE)); },
-    /security scan blocked this issue: contains ignore previous instructions/,
+    /^Error: contains \*\*ignore previous instructions\*\* injection$/,
   );
 });
 

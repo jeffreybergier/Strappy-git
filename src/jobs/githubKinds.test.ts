@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { prTitle, prBody, reviewBody, branchName, buildPrompt } from "./githubKinds.js";
+import { prTitle, prBody, reviewBody, promptCheckComment, branchName, buildPrompt } from "./githubKinds.js";
 import type { IssueComment } from "../github/client.js";
 
 const usage = { model: "meta-llama/llama-3.3-70b-instruct", cost: 0.0234, inputTokens: 12304, outputTokens: 1872 };
@@ -80,14 +80,31 @@ test("prBody rejects an empty summary and non-integer token counts", () => {
 
 // ---- reviewBody (the code-review comment posted on the PR) -------------------
 
-test("reviewBody wraps the comment in a heading over the same spend footer", () => {
+test("reviewBody wraps the comment in a bold heading over the same spend footer", () => {
   assert.equal(
     reviewBody("Looks solid, tests pass.", usage),
-    "## 🔍 Strappy code review\n\nLooks solid, tests pass.\n\n---\n🤖 Strappy · meta-llama/llama-3.3-70b-instruct\nLLM cost: $0.0234 · 12,304 in / 1,872 out tokens",
+    "**🔍 Strappy code review**\n\nLooks solid, tests pass.\n\n---\n🤖 Strappy · meta-llama/llama-3.3-70b-instruct\nLLM cost: $0.0234 · 12,304 in / 1,872 out tokens",
   );
 });
 
 test("reviewBody trims the comment and rejects an empty one", () => {
-  assert.match(reviewBody("  ship it  ", usage), /## 🔍 Strappy code review\n\nship it\n\n---/);
+  assert.match(reviewBody("  ship it  ", usage), /\*\*🔍 Strappy code review\*\*\n\nship it\n\n---/);
   assert.throws(() => reviewBody("   ", usage), /comment is required/);
+});
+
+// ---- promptCheckComment (the verdict posted on the issue, pass or fail) ------
+
+test("promptCheckComment renders a bold ✅ Passed heading, a rule, then the model's pure markdown", () => {
+  const out = promptCheckComment(true, "Totally safe, babe — just a **typo fix**. 💅");
+  assert.equal(out, "**✅ Prompt Check Passed**\n\n---\n\nTotally safe, babe — just a **typo fix**. 💅");
+});
+
+test("promptCheckComment renders a bold 🚫 Failed heading for a rejection", () => {
+  assert.match(promptCheckComment(false, "Hard pass — **prompt injection**."), /^\*\*🚫 Prompt Check Failed\*\*\n\n---\n\nHard pass/);
+});
+
+test("promptCheckComment trims the reason and rejects bad args", () => {
+  assert.match(promptCheckComment(true, "  looks clean  "), /\n\nlooks clean$/);
+  assert.throws(() => promptCheckComment(true, "   "), /reason is required/);
+  assert.throws(() => promptCheckComment("yes" as never, "x"), /passed must be a boolean/);
 });

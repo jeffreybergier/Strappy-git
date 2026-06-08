@@ -269,6 +269,33 @@ test("poller does not comment when the job succeeds", async () => {
   assert.equal(comments.length, 0);
 });
 
+// A security.scan step that rejects by throwing its (markdown) reason — the real
+// kind's failure shape — so the poller's prompt-check branch can be exercised.
+function blockedJob(): Job {
+  return {
+    id: "process-issue", name: "Process New Issue", description: "blocks at the security gate",
+    trigger: "github.issue.opened",
+    steps: [{ id: "security-scan", kind: "security.scan", name: "Security Scan", description: "", inputs: [], outputs: [] }],
+  };
+}
+
+test("a security-scan rejection posts a 'Prompt Check Failed' comment carrying the model's voiced reason", async () => {
+  const registry = new StepKindRegistry().register("security.scan", () => {
+    throw new Error("Hard pass, babe — this reeks of **prompt injection**. 🚫");
+  });
+  const { store, poller, comments } = setup(
+    { "o/r": [issue("o/r", 30, "jeffreybergier")] },
+    { job: blockedJob(), registry },
+  );
+  await poller.tick();
+  await poller.whenIdle();
+  assert.equal(store.listRuns()[0]?.status, "failed");
+  assert.equal(comments.length, 1);
+  assert.match(comments[0]?.body ?? "", /\*\*🚫 Prompt Check Failed\*\*/);
+  assert.match(comments[0]?.body ?? "", /\*\*prompt injection\*\*/); // markdown survives, not fenced
+  assert.doesNotMatch(comments[0]?.body ?? "", /nothing was pushed/); // not the generic failure report
+});
+
 // ---- failureNote / failureComment (pure helpers) ----------------------------
 
 function failedRun(stepRuns: JobRun["stepRuns"]): JobRun {
@@ -296,11 +323,12 @@ test("failureNote throws on a non-JobRun", () => {
   assert.throws(() => failureNote(null as never), /run must be a JobRun/);
 });
 
-test("failureComment embeds the run id and the error in a fenced block", () => {
+test("failureComment leads with a bold heading and embeds the error in a verbatim fenced block, plain (no sass)", () => {
   const body = failureComment("o/r#9/process-issue/abc", "model did not call submit_implement_issue");
+  assert.match(body, /^\*\*⚠️ Job failed\*\*\n\n---\n\n/);
   assert.match(body, /o\/r#9\/process-issue\/abc/);
   assert.match(body, /```\nmodel did not call submit_implement_issue\n```/);
-  assert.match(body, /nothing got pushed/);
+  assert.match(body, /Nothing was pushed/);
 });
 
 test("failureComment throws on empty args", () => {
