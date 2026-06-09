@@ -12,21 +12,29 @@ function step(id: string, outputs: StepIO[]): ProcessStep {
   return { id, kind: "llm", name: id, description: "", inputs: [], outputs };
 }
 
-test("groupOutputs buckets produced, passthrough and receipt outputs in order", () => {
+test("groupOutputs splits produced from derived, then passthrough and receipt, in order", () => {
   const groups = groupOutputs([io("a", "step"), io("c", "receipt"), io("b", "pass"), io("d", "derived")]);
-  assert.deepEqual(groups.map((g) => g.label), ["New", "Passthrough", "Receipt"]);
-  assert.deepEqual(groups[0]?.items.map((i) => i.key), ["a", "d"]); // step + derived = New
+  assert.deepEqual(groups.map((g) => g.label), ["Produced", "Derived", "Passthrough", "Receipt"]);
+  assert.deepEqual(groups.map((g) => g.key), ["step", "derived", "pass", "receipt"]); // stable css keys
+  assert.deepEqual(groups[0]?.items.map((i) => i.key), ["a"]); // step -> Produced
+  assert.deepEqual(groups[1]?.items.map((i) => i.key), ["d"]); // derived -> Derived
+});
+
+test("a derived output gets its own 'Derived' bucket, separate from produced", () => {
+  const groups = groupOutputs([io("cost", "derived")]);
+  assert.deepEqual(groups.map((g) => g.label), ["Derived"]);
+  assert.equal(groups[0]?.key, "derived");
 });
 
 test("groupOutputs drops empty categories", () => {
   const groups = groupOutputs([io("a", "step")]);
-  assert.deepEqual(groups.map((g) => g.label), ["New"]);
+  assert.deepEqual(groups.map((g) => g.label), ["Produced"]);
 });
 
 test("a feedsFailure output goes to 'Relayed on failure', not its source bucket (no duplication)", () => {
   const groups = groupOutputs([io("summary", "step", true), io("plain", "step")]);
   const byLabel = Object.fromEntries(groups.map((g) => [g.label, g.items.map((i) => i.key)]));
-  assert.deepEqual(byLabel["New"], ["plain"]);
+  assert.deepEqual(byLabel["Produced"], ["plain"]);
   assert.deepEqual(byLabel["Relayed on failure"], ["summary"]);
   assert.equal(groups.find((g) => g.label === "Relayed on failure")?.key, "relayed"); // stable css key
 });

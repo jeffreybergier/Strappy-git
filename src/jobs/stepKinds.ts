@@ -21,6 +21,14 @@ export interface StepContext {
 // out (sync or async). The scheduler dispatches to one executor per step.
 export type StepExecutor = (ctx: StepContext) => StepValues | Promise<StepValues>;
 
+// What a registered kind can do beyond running. Today: the "derived" output keys
+// it fills from the recorded execution — declared at registration so the
+// registry-aware validator (validateJobRegistry) can reject a "derived" output
+// the kind cannot actually produce, before any step runs.
+export interface KindCapabilities {
+  derivableKeys?: readonly string[];
+}
+
 // The transcript id for a step's LLM call: the JobRun id qualified by the step
 // id, so each LLM-backed step renders its OWN data/sessions/*.html. The run id
 // alone collides — a run has several LLM steps (security scan, implement,
@@ -35,8 +43,9 @@ export function transcriptId(ctx: StepContext): string | undefined {
 // jobs. register() returns this, so a registry composes in one expression.
 export class StepKindRegistry {
   private readonly kinds = new Map<string, StepExecutor>();
+  private readonly derivable = new Map<string, ReadonlySet<string>>();
 
-  register(kind: string, executor: StepExecutor): this {
+  register(kind: string, executor: StepExecutor, capabilities: KindCapabilities = {}): this {
     if (typeof kind !== "string" || kind.trim() === "") {
       throw new Error("[StepKindRegistry.register] kind must be a non-empty string");
     }
@@ -47,6 +56,7 @@ export class StepKindRegistry {
       throw new Error(`[StepKindRegistry.register] kind already registered: ${kind}`);
     }
     this.kinds.set(kind, executor);
+    this.derivable.set(kind, new Set(capabilities.derivableKeys ?? []));
     return this;
   }
 
@@ -54,6 +64,14 @@ export class StepKindRegistry {
     const executor = this.kinds.get(kind);
     if (executor === undefined) throw new Error(`[StepKindRegistry.resolve] unknown step kind: ${kind}`);
     return executor;
+  }
+
+  // The "derived" output keys this kind fills from its recorded execution (empty
+  // for kinds that record none). Throws on an unknown kind (strict).
+  derivableKeys(kind: string): ReadonlySet<string> {
+    const keys = this.derivable.get(kind);
+    if (keys === undefined) throw new Error(`[StepKindRegistry.derivableKeys] unknown step kind: ${kind}`);
+    return keys;
   }
 
   has(kind: string): boolean {

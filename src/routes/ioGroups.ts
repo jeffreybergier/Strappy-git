@@ -8,16 +8,19 @@ export interface OutputGroup {
   items: StepIO[];
 }
 
-// Buckets a step's outputs for the dashboard: freshly produced values
-// (step/derived), carried passthroughs, terminal receipts, and any marked to be
-// relayed into the failure comment. A feedsFailure output lands in "Relayed on
-// failure" regardless of its source, so it appears once rather than twice — it is
-// not a per-step failure path (every step routes to the handler), but the value
-// this step contributes to that comment. Empty groups are dropped.
+// Buckets a step's outputs for the dashboard, one group per source so the view
+// reflects the real contract: model/executor-authored "Produced" (step) and
+// harness-filled "Derived" are split (matching the runs view), then carried
+// passthroughs, terminal receipts, and any marked to be relayed into the failure
+// comment. A feedsFailure output lands in "Relayed on failure" regardless of its
+// source, so it appears once rather than twice — it is not a per-step failure
+// path (every step routes to the handler), but the value this step contributes to
+// that comment. Empty groups are dropped.
 export function groupOutputs(outputs: StepIO[]): OutputGroup[] {
   if (!Array.isArray(outputs)) throw new Error("[ioGroups.groupOutputs] outputs must be an array");
   const groups: OutputGroup[] = [
-    { key: "new", label: "New", items: outputs.filter((io) => !io.feedsFailure && (io.source === "step" || io.source === "derived")) },
+    { key: "step", label: "Produced", items: outputs.filter((io) => !io.feedsFailure && io.source === "step") },
+    { key: "derived", label: "Derived", items: outputs.filter((io) => !io.feedsFailure && io.source === "derived") },
     { key: "pass", label: "Passthrough", items: outputs.filter((io) => !io.feedsFailure && io.source === "pass") },
     { key: "receipt", label: "Receipt", items: outputs.filter((io) => !io.feedsFailure && io.source === "receipt") },
     { key: "relayed", label: "Relayed on failure", items: outputs.filter((io) => io.feedsFailure === true) },
