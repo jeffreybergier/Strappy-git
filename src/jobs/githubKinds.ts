@@ -50,7 +50,6 @@ export function githubStepKinds(deps: GitHubKindDeps): StepKindRegistry {
     .register("git.commitPush", (ctx) => commitPush(deps, ctx))
     .register("github.openPullRequest", (ctx) => openPullRequest(deps, ctx))
     .register("github.commentPr", (ctx) => commentPullRequest(deps, ctx))
-    .register("github.commentIssue", (ctx) => commentIssue(deps, ctx))
     .register("github.closeIssue", (ctx) => closeIssue(deps, ctx));
 }
 
@@ -115,7 +114,7 @@ async function openPullRequest(deps: GitHubKindDeps, ctx: StepContext): Promise<
     head: str(ctx.inputs, "newBranch"),
     base: str(ctx.inputs, "baseBranch"),
     title: prTitle(str(ctx.inputs, "pullRequestTitle"), n),
-    body: prBody(str(ctx.inputs, "pullRequestSummary"), {
+    body: prBody(str(ctx.inputs, "pullRequestSummary"), n, {
       model: str(ctx.inputs, "model"),
       cost: num(ctx.inputs, "cost"),
       inputTokens: num(ctx.inputs, "inputTokens"),
@@ -141,11 +140,12 @@ export function prTitle(modelTitle: string, issueNumber: number): string {
   return `Strappy: ${modelTitle.trim()} (#${issueNumber})`;
 }
 
-// The model's summary, then a footer carrying the real LLM spend Pi reported
-// (model, cost, token split) so a reviewer sees what the run cost.
-export function prBody(summary: string, usage: PrUsage): string {
+// The model's summary, an explicit issue reference for GitHub's native
+// cross-linking, then a footer carrying the real LLM spend Pi reported.
+export function prBody(summary: string, issueNumber: number, usage: PrUsage): string {
   if (typeof summary !== "string" || summary.trim() === "") throw new Error("[githubKinds.prBody] summary is required");
-  return `${summary.trim()}\n\n${usageFooter(usage)}`;
+  if (!Number.isInteger(issueNumber)) throw new Error("[githubKinds.prBody] issueNumber must be an integer");
+  return `${summary.trim()}\n\nRefs #${issueNumber}\n\n${usageFooter(usage)}`;
 }
 
 // The review model's comment, posted on the PR under a bold heading (our
@@ -210,16 +210,6 @@ async function commentSecurity(deps: GitHubKindDeps, ctx: StepContext): Promise<
     str(ctx.inputs, "repo"),
     num(ctx.inputs, "issueNumber"),
     promptCheckComment(true, str(ctx.inputs, "securityReason")),
-  );
-  return { commentId };
-}
-
-async function commentIssue(deps: GitHubKindDeps, ctx: StepContext): Promise<StepValues> {
-  const prNumber = num(ctx.inputs, "prNumber");
-  const commentId = await deps.client.commentOnIssue(
-    str(ctx.inputs, "repo"),
-    num(ctx.inputs, "issueNumber"),
-    `Strappy opened #${prNumber} for this issue.`,
   );
   return { commentId };
 }

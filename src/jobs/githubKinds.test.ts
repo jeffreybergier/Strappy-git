@@ -61,21 +61,22 @@ test("prTitle rejects an empty title or a non-numeric issue number", () => {
 });
 
 test("prBody appends a cost/model/token footer under the summary", () => {
-  const body = prBody("Implemented the change.", usage);
+  const body = prBody("Implemented the change.", 7, usage);
   assert.equal(
     body,
-    "Implemented the change.\n\n---\n🤖 Strappy · meta-llama/llama-3.3-70b-instruct\nLLM cost: $0.0234 · 12,304 in / 1,872 out tokens",
+    "Implemented the change.\n\nRefs #7\n\n---\n🤖 Strappy · meta-llama/llama-3.3-70b-instruct\nLLM cost: $0.0234 · 12,304 in / 1,872 out tokens",
   );
 });
 
 test("prBody formats cost to 4 decimals and thousands-separates tokens", () => {
-  const body = prBody("x", { model: "m", cost: 0.5, inputTokens: 1000000, outputTokens: 0 });
+  const body = prBody("x", 2, { model: "m", cost: 0.5, inputTokens: 1000000, outputTokens: 0 });
   assert.match(body, /LLM cost: \$0\.5000 · 1,000,000 in \/ 0 out tokens$/);
 });
 
-test("prBody rejects an empty summary and non-integer token counts", () => {
-  assert.throws(() => prBody("   ", usage), /summary is required/);
-  assert.throws(() => prBody("x", { ...usage, inputTokens: 1.5 }), /tokens must be an integer/);
+test("prBody rejects an empty summary, non-integer issue number, and non-integer token counts", () => {
+  assert.throws(() => prBody("   ", 7, usage), /summary is required/);
+  assert.throws(() => prBody("x", 1.5, usage), /issueNumber must be an integer/);
+  assert.throws(() => prBody("x", 7, { ...usage, inputTokens: 1.5 }), /tokens must be an integer/);
 });
 
 // ---- reviewBody (the code-review comment posted on the PR) -------------------
