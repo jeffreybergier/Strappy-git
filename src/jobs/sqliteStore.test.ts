@@ -191,6 +191,33 @@ test("saveJob + getJob round-trips a new job with its IO contract", () => {
   assert.deepEqual(store.getJob("echo"), job);
 });
 
+test("a feedsFailure output marker round-trips through sqlite; a plain output stays unmarked", () => {
+  const db = openDatabase(":memory:");
+  const store = new SqliteJobStore(db);
+  const job: Job = {
+    id: "mark",
+    name: "Mark",
+    description: "Mark one output as feeding the failure comment.",
+    trigger: "manual",
+    steps: [
+      {
+        id: "s",
+        kind: "llm",
+        name: "S",
+        description: "",
+        inputs: [],
+        outputs: [
+          { key: "summary", type: "string", source: "step", description: "feeds the error comment", feedsFailure: true },
+          { key: "plain", type: "string", source: "step", description: "ordinary output" },
+        ],
+      },
+    ],
+    failureHandler: failureHandler(),
+  };
+  store.saveJob(job);
+  assert.deepEqual(store.getJob("mark"), job); // marked stays true; plain gains no feedsFailure key
+});
+
 test("saveJob + getJob round-trips a step's authored systemPrompt", () => {
   const db = openDatabase(":memory:");
   const store = new SqliteJobStore(db);

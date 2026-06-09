@@ -55,6 +55,9 @@ function checkHandlerInput(handler: FailureHandler, input: StepIO, trigger: Map<
 }
 
 function checkInput(step: ProcessStep, input: StepIO, trigger: Map<string, IoType>, previous: Map<string, IoType>): void {
+  if (input.feedsFailure) {
+    throw new Error(`[validateJobGraph] step "${step.id}" input "${input.key}" sets feedsFailure (output-only)`);
+  }
   if (input.source === "static") return checkStatic(step, input);
   const from = input.source === "trigger" ? trigger : previous;
   const producerType = from.get(input.key);

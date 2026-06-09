@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { IssuePoller, isAllowedAuthor, formatRunId, failureNote, failureComment, attemptedSummary } from "./poller.js";
+import { IssuePoller, isAllowedAuthor, formatRunId, failureNote, failureComment, attemptedSummary, failureOutputKeys } from "./poller.js";
 import type { GitHubClient, IssueComment, IssueRef } from "./client.js";
 import { openDatabase } from "../jobs/db.js";
 import { SqliteJobStore } from "../jobs/sqliteStore.js";
@@ -353,12 +353,24 @@ test("failureComment omits the summary section when none is given", () => {
   assert.doesNotMatch(failureComment("run", "boom", "   "), /What the model was trying to do/);
 });
 
-test("attemptedSummary reads the PR summary off a succeeded step's recorded outputs", () => {
+test("failureOutputKeys reads the graph's feedsFailure markers (process-issue marks the PR summary)", () => {
+  assert.deepEqual(failureOutputKeys(processIssueJob()), ["pullRequestSummary"]);
+});
+
+test("failureOutputKeys is empty for a job that marks nothing", () => {
+  assert.deepEqual(failureOutputKeys(failingJob()), []);
+});
+
+test("failureOutputKeys throws on a non-Job", () => {
+  assert.throws(() => failureOutputKeys(null as never), /job must be a Job/);
+});
+
+test("attemptedSummary reads a marked-key value off a succeeded step's recorded outputs", () => {
   const run = failedRun([
     { stepId: "implement-issue", status: "succeeded", outputs: { pullRequestSummary: "Refactored the thing 💅" } },
     { stepId: "commit-push", status: "failed", note: "nothing to commit" },
   ]);
-  assert.equal(attemptedSummary(run), "Refactored the thing 💅");
+  assert.equal(attemptedSummary(run, ["pullRequestSummary"]), "Refactored the thing 💅");
 });
 
 test("attemptedSummary falls back to a failed step's resolved inputs (the carried pass value)", () => {
@@ -366,13 +378,16 @@ test("attemptedSummary falls back to a failed step's resolved inputs (the carrie
     { stepId: "implement-issue", status: "succeeded" },
     { stepId: "commit-push", status: "failed", inputs: { pullRequestSummary: "Carried summary" }, note: "boom" },
   ]);
-  assert.equal(attemptedSummary(run), "Carried summary");
+  assert.equal(attemptedSummary(run, ["pullRequestSummary"]), "Carried summary");
 });
 
-test("attemptedSummary returns null when no step carried a summary", () => {
-  assert.equal(attemptedSummary(failedRun([{ stepId: "fetch-issue", status: "failed", note: "404" }])), null);
+test("attemptedSummary returns null when no step carried a marked value (or no keys are marked)", () => {
+  const carried = failedRun([{ stepId: "implement-issue", status: "succeeded", outputs: { pullRequestSummary: "x" } }]);
+  assert.equal(attemptedSummary(failedRun([{ stepId: "fetch-issue", status: "failed", note: "404" }]), ["pullRequestSummary"]), null);
+  assert.equal(attemptedSummary(carried, []), null); // nothing marked -> nothing relayed
 });
 
-test("attemptedSummary throws on a non-JobRun", () => {
-  assert.throws(() => attemptedSummary(null as never), /run must be a JobRun/);
+test("attemptedSummary throws on a non-JobRun or non-array keys", () => {
+  assert.throws(() => attemptedSummary(null as never, []), /run must be a JobRun/);
+  assert.throws(() => attemptedSummary(failedRun([]), null as never), /keys must be an array/);
 });
