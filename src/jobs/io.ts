@@ -23,8 +23,12 @@ export function asIoType(value: unknown): IoType {
 // model, but it feeds later steps like a "step" output. "receipt" is an
 // output-only terminal: a produced side-effect acknowledgement (e.g. "pushed",
 // "closed") deliberately consumed by no later step, so the graph verifier treats
-// it as an intended endpoint rather than dangling waste.
-export const IO_SOURCES = ["trigger", "static", "step", "pass", "derived", "receipt"] as const;
+// it as an intended endpoint rather than dangling waste. "failure" is a run-level
+// fact the generic failure handler reads off the failed run itself (the failed
+// step id, its error note, the run id, a best-effort attempted summary) — it has
+// no in-graph producer, so it only ever sources a FailureHandler input, never a
+// step's.
+export const IO_SOURCES = ["trigger", "static", "step", "pass", "derived", "receipt", "failure"] as const;
 export type IoSource = (typeof IO_SOURCES)[number];
 
 export function isIoSource(value: unknown): value is IoSource {

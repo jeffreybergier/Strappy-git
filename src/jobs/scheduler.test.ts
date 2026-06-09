@@ -6,6 +6,7 @@ import type { StepValues } from "./stepKinds.js";
 import { openDatabase } from "./db.js";
 import { SqliteJobStore } from "./sqliteStore.js";
 import { seedJobs } from "./seed.js";
+import { failureHandler } from "./failureHandler.js";
 import type { Job, JobRun, LlmExecution, ProcessStep } from "./types.js";
 
 function fakeExecution(text: string): LlmExecution {
@@ -31,7 +32,7 @@ function step(id: string, kind: string, inputs: string[], outputs: string[]): Pr
 }
 
 function job(id: string, steps: ProcessStep[]): Job {
-  return { id, name: id, description: "", trigger: "manual", steps };
+  return { id, name: id, description: "", trigger: "manual", steps, failureHandler: failureHandler() };
 }
 
 test("runJob threads one step's outputs into the next step's inputs", async () => {

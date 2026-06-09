@@ -14,7 +14,9 @@ function step(id: string, inputs: StepIO[], outputs: StepIO[], systemPrompt?: st
 }
 
 function job(steps: ProcessStep[]): Job {
-  return { id: "j", name: "j", description: "", trigger: "t", steps };
+  // A no-input failure handler: validates against any trigger, so these graph
+  // tests stay focused on the steps. Handler-specific checks live in their own tests.
+  return { id: "j", name: "j", description: "", trigger: "t", steps, failureHandler: { id: "f", name: "f", description: "", inputs: [] } };
 }
 
 test("the real processIssueJob graph validates against its trigger contract", () => {
@@ -103,6 +105,40 @@ test("unconsumedOutputs flags a step output the next step never reads, but not a
     step("b", [io("used", "string", "step")], []),
   ]);
   assert.deepEqual(unconsumedOutputs(graph), [{ stepId: "a", key: "dropped" }]);
+});
+
+// ---- failure handler (the terminal every step routes to on failure) ----------
+
+function jobWithHandler(inputs: StepIO[]): Job {
+  return { id: "j", name: "j", description: "", trigger: "t", steps: [], failureHandler: { id: "f", name: "f", description: "", inputs } };
+}
+
+test("a failure handler trigger input is satisfied by the trigger contract", () => {
+  assert.doesNotThrow(() => validateJobGraph(jobWithHandler([io("repo", "string", "trigger")]), [io("repo", "string", "trigger")]));
+});
+
+test("a failure handler 'failure' input needs no producer (run-level fact)", () => {
+  assert.doesNotThrow(() => validateJobGraph(jobWithHandler([io("errorNote", "string", "failure")]), []));
+});
+
+test("a failure handler trigger input with no matching trigger constant is rejected", () => {
+  assert.throws(() => validateJobGraph(jobWithHandler([io("nope", "string", "trigger")]), []), /failure handler "f" trigger input "nope" has no producer/);
+});
+
+test("a failure handler trigger input whose type drifts from the trigger contract is rejected", () => {
+  assert.throws(
+    () => validateJobGraph(jobWithHandler([io("issueNumber", "string", "trigger")]), [io("issueNumber", "number", "trigger")]),
+    /failure handler "f" input "issueNumber" type "string" != producer type "number"/,
+  );
+});
+
+test("a failure handler input from a step source is rejected (the terminal has no step producer)", () => {
+  assert.throws(() => validateJobGraph(jobWithHandler([io("x", "string", "step")]), []), /failure handler "f" input "x" must source "trigger" or "failure"/);
+});
+
+test("validateJobGraph rejects a job whose failure handler declares no inputs", () => {
+  const bad = { id: "j", name: "j", description: "", trigger: "t", steps: [] } as unknown as Job;
+  assert.throws(() => validateJobGraph(bad, []), /job.failureHandler must declare inputs/);
 });
 
 test("unconsumedOutputs flags a pass value carried but never consumed downstream", () => {

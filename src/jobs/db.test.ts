@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { openDatabase, readJobs, syncJobs } from "./db.js";
 import { SqliteJobStore } from "./sqliteStore.js";
 import { SCHEMA_VERSION } from "./schema.js";
+import { failureHandler } from "./failureHandler.js";
 import type { Job } from "./types.js";
 
 function job(steps: string[], name = "J"): Job {
@@ -23,6 +24,7 @@ function job(steps: string[], name = "J"): Job {
       inputs: [],
       outputs: [{ key: "out", type: "string", source: "step", description: "" }],
     })),
+    failureHandler: failureHandler(),
   };
 }
 
@@ -92,7 +94,7 @@ test("syncJobs inserts a job that does not exist yet", () => {
 test("openDatabase leaves a current-version db intact on reopen (no rebuild, no data loss)", () => {
   const dbPath = tmpDbPath();
   const first = openDatabase(dbPath);
-  first.prepare("INSERT INTO jobs (id, name, description, trigger) VALUES (?, ?, ?, ?)").run("keep", "Keep", "d", "manual");
+  new SqliteJobStore(first).saveJob(job(["a"])); // a full job (with its failure handler), via the real write path
   first.close();
   const second = openDatabase(dbPath);
   assert.equal(readJobs(second).length, 1);

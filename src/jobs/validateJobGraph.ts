@@ -1,6 +1,6 @@
 import { createLogger } from "../logger.js";
 import type { IoType } from "./io.js";
-import type { Job, ProcessStep, StepIO } from "./types.js";
+import type { FailureHandler, Job, ProcessStep, StepIO } from "./types.js";
 
 const log = createLogger("validateJobGraph");
 
@@ -27,7 +27,31 @@ export function validateJobGraph(job: Job, triggerInputs: StepIO[]): void {
     for (const input of step.inputs) checkInput(step, input, trigger, previous);
     previous = checkOutputs(step, inputsByKey);
   }
+  checkFailureHandler(job.failureHandler, trigger);
   warnUnconsumed(unconsumedOutputs(job));
+}
+
+// The terminal every step routes to on failure. Its inputs may only be ambient
+// trigger constants (verified against the trigger contract, exactly like a step's
+// "trigger" input) or run-level "failure" facts (which have no in-graph producer,
+// so there is nothing to check beyond the source). Any other source would imply
+// reading a step's output, but a failure can stop the run before that step ran.
+function checkFailureHandler(handler: FailureHandler, trigger: Map<string, IoType>): void {
+  for (const input of handler.inputs) checkHandlerInput(handler, input, trigger);
+}
+
+function checkHandlerInput(handler: FailureHandler, input: StepIO, trigger: Map<string, IoType>): void {
+  if (input.source === "failure") return;
+  if (input.source !== "trigger") {
+    throw new Error(`[validateJobGraph] failure handler "${handler.id}" input "${input.key}" must source "trigger" or "failure"`);
+  }
+  const producerType = trigger.get(input.key);
+  if (producerType === undefined) {
+    throw new Error(`[validateJobGraph] failure handler "${handler.id}" trigger input "${input.key}" has no producer`);
+  }
+  if (producerType !== input.type) {
+    throw new Error(`[validateJobGraph] failure handler "${handler.id}" input "${input.key}" type "${input.type}" != producer type "${producerType}"`);
+  }
 }
 
 function checkInput(step: ProcessStep, input: StepIO, trigger: Map<string, IoType>, previous: Map<string, IoType>): void {
@@ -127,4 +151,7 @@ function indexInputs(step: ProcessStep): Map<string, StepIO> {
 function validateArgs(job: Job, triggerInputs: StepIO[]): void {
   if (!job || !Array.isArray(job.steps)) throw new Error("[validateJobGraph] job must be a valid Job");
   if (!Array.isArray(triggerInputs)) throw new Error("[validateJobGraph] triggerInputs must be an array");
+  if (!job.failureHandler || !Array.isArray(job.failureHandler.inputs)) {
+    throw new Error("[validateJobGraph] job.failureHandler must declare inputs");
+  }
 }

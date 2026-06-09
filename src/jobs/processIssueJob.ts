@@ -1,6 +1,7 @@
 import type { Job, ProcessStep, StepIO } from "./types.js";
 import type { IoSource, IoType } from "./io.js";
 import { loadPrompt } from "./prompts.js";
+import { failureHandler } from "./failureHandler.js";
 import { validateJobGraph } from "./validateJobGraph.js";
 
 function io(key: string, type: IoType, source: IoSource, description: string, guidance?: string): StepIO {
@@ -192,6 +193,8 @@ export function processIssueJob(): Job {
         [io("repo", "string", "trigger", "owner/name"), io("issueNumber", "number", "trigger", "Issue number")],
         [io("closed", "boolean", "receipt", "Terminal: the issue was closed")]),
     ],
+    // Every step routes here on failure; the same generic handler for all of them.
+    failureHandler: failureHandler(),
   };
   // Strict init: refuse to hand back a job whose step contract doesn't hold.
   validateJobGraph(job, issueTriggerInputs());

@@ -12,8 +12,8 @@ test("asIoType returns valid types and throws on invalid ones", () => {
   assert.throws(() => asIoType("sting"), /invalid io type "sting"/);
 });
 
-test("isIoSource accepts the vocabulary and rejects everything else", () => {
-  for (const s of ["trigger", "static", "step", "pass", "derived", "receipt"]) assert.equal(isIoSource(s), true);
+test("isIoSource accepts the vocabulary (including 'failure') and rejects everything else", () => {
+  for (const s of ["trigger", "static", "step", "pass", "derived", "receipt", "failure"]) assert.equal(isIoSource(s), true);
   for (const s of ["bus", "", "input", 1, null, undefined]) assert.equal(isIoSource(s), false);
 });
 

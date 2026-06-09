@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { IssuePoller, isAllowedAuthor, formatRunId, failureNote, failureComment } from "./poller.js";
+import { IssuePoller, isAllowedAuthor, formatRunId, failureNote, failureComment, attemptedSummary } from "./poller.js";
 import type { GitHubClient, IssueComment, IssueRef } from "./client.js";
 import { openDatabase } from "../jobs/db.js";
 import { SqliteJobStore } from "../jobs/sqliteStore.js";
 import { defaultStepKinds, StepKindRegistry } from "../jobs/stepKinds.js";
 import { processIssueJob } from "../jobs/processIssueJob.js";
+import { failureHandler } from "../jobs/failureHandler.js";
 import type { Job, JobRun } from "../jobs/types.js";
 
 // ---- isAllowedAuthor (the security gate) ------------------------------------
@@ -116,6 +117,7 @@ function failingJob(): Job {
         outputs: [],
       },
     ],
+    failureHandler: failureHandler(),
   };
 }
 
@@ -187,6 +189,7 @@ test("a backlog shows queued runs in the dashboard before they start", async () 
     description: "",
     trigger: "github.issue.opened",
     steps: [{ id: "s1", kind: "wait", name: "s1", description: "", inputs: [], outputs: [] }],
+    failureHandler: failureHandler(),
   };
   const { store, poller } = setup(
     { "o/r": [issue("o/r", 20, "jeffreybergier"), issue("o/r", 21, "jeffreybergier")] },
@@ -276,6 +279,7 @@ function blockedJob(): Job {
     id: "process-issue", name: "Process New Issue", description: "blocks at the security gate",
     trigger: "github.issue.opened",
     steps: [{ id: "security-scan", kind: "security.scan", name: "Security Scan", description: "", inputs: [], outputs: [] }],
+    failureHandler: failureHandler(),
   };
 }
 
@@ -334,4 +338,41 @@ test("failureComment leads with a bold heading and embeds the error in a verbati
 test("failureComment throws on empty args", () => {
   assert.throws(() => failureComment("", "boom"), /runId must be a non-empty string/);
   assert.throws(() => failureComment("run", ""), /detail must be a non-empty string/);
+});
+
+test("failureComment appends the model's summary under an attributed header, markdown intact (not fenced)", () => {
+  const body = failureComment("o/r#9/process-issue/abc", "nothing to commit, working tree clean", "## What I did\nMade it **sparkle** ✨");
+  assert.match(body, /```\nnothing to commit, working tree clean\n```/); // the error still fenced
+  assert.match(body, /\*\*What the model was trying to do\*\*/);
+  assert.match(body, /## What I did\nMade it \*\*sparkle\*\* ✨/); // the model's markdown survives, not fenced
+});
+
+test("failureComment omits the summary section when none is given", () => {
+  assert.doesNotMatch(failureComment("run", "boom"), /What the model was trying to do/);
+  assert.doesNotMatch(failureComment("run", "boom", null), /What the model was trying to do/);
+  assert.doesNotMatch(failureComment("run", "boom", "   "), /What the model was trying to do/);
+});
+
+test("attemptedSummary reads the PR summary off a succeeded step's recorded outputs", () => {
+  const run = failedRun([
+    { stepId: "implement-issue", status: "succeeded", outputs: { pullRequestSummary: "Refactored the thing 💅" } },
+    { stepId: "commit-push", status: "failed", note: "nothing to commit" },
+  ]);
+  assert.equal(attemptedSummary(run), "Refactored the thing 💅");
+});
+
+test("attemptedSummary falls back to a failed step's resolved inputs (the carried pass value)", () => {
+  const run = failedRun([
+    { stepId: "implement-issue", status: "succeeded" },
+    { stepId: "commit-push", status: "failed", inputs: { pullRequestSummary: "Carried summary" }, note: "boom" },
+  ]);
+  assert.equal(attemptedSummary(run), "Carried summary");
+});
+
+test("attemptedSummary returns null when no step carried a summary", () => {
+  assert.equal(attemptedSummary(failedRun([{ stepId: "fetch-issue", status: "failed", note: "404" }])), null);
+});
+
+test("attemptedSummary throws on a non-JobRun", () => {
+  assert.throws(() => attemptedSummary(null as never), /run must be a JobRun/);
 });

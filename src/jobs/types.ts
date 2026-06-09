@@ -38,12 +38,29 @@ export interface ProcessStep {
   outputs: StepIO[];
 }
 
+// The single, generic error handler every step routes to on failure: a comment
+// posted back on the triggering issue. Strappy handles a step failure the SAME
+// way for every step (there is no per-step failure logic), so the failure path is
+// declared once per job rather than on each step. `inputs` enumerate the data the
+// handler receives — the run-level failure facts (source "failure": the failed
+// step id, its error note, the run id, a best-effort attempted summary) plus the
+// trigger constants needed to address the comment. It is part of the persisted
+// process graph so the dashboard can draw the failure edge from every step.
+export interface FailureHandler {
+  id: string;
+  name: string;
+  description: string;
+  inputs: StepIO[];
+}
+
 export interface Job {
   id: string;
   name: string;
   description: string;
   trigger: string;
   steps: ProcessStep[];
+  // The terminal every step transitions to on failure (see FailureHandler).
+  failureHandler: FailureHandler;
 }
 
 // Token counts and cost for one LLM call, taken from the provider's reported

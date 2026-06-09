@@ -3,12 +3,19 @@ import assert from "node:assert/strict";
 import { openDatabase, seedDatabase } from "./db.js";
 import { SqliteJobStore } from "./sqliteStore.js";
 import { seedJobs, seedRuns } from "./seed.js";
+import { failureHandler } from "./failureHandler.js";
 import type { Job, JobRun } from "./types.js";
 
 function freshStore(): SqliteJobStore {
   const db = openDatabase(":memory:");
   seedDatabase(db, seedJobs(), seedRuns());
   return new SqliteJobStore(db);
+}
+
+// A minimal job (no steps) carrying the generic failure handler, for run-focused
+// round-trip tests that only need a job row to hang a run off.
+function bareJob(): Job {
+  return { id: "j", name: "J", description: "d", trigger: "manual", steps: [], failureHandler: failureHandler() };
 }
 
 test("seeded sqlite store exposes the seeded jobs", () => {
@@ -28,6 +35,13 @@ test("getJob returns null when absent", () => {
   assert.equal(store.getJob("does-not-exist"), null);
 });
 
+test("the failure handler round-trips through sqlite with its typed inputs and sources", () => {
+  const store = freshStore();
+  const handler = store.getJob("process-issue")?.failureHandler;
+  assert.deepEqual(handler, failureHandler());
+  assert.ok(handler?.inputs.some((io) => io.source === "failure")); // a run-level "failure" fact survived
+});
+
 test("getJob throws on a non-string id", () => {
   const store = freshStore();
   assert.throws(() => store.getJob(123 as never), /id must be a string/);
@@ -41,7 +55,7 @@ test("seeded sqlite store starts with no runs", () => {
 test("listRuns preserves step runs, statuses and optional notes", () => {
   const db = openDatabase(":memory:");
   const store = new SqliteJobStore(db);
-  store.saveJob({ id: "j", name: "J", description: "d", trigger: "manual", steps: [] });
+  store.saveJob(bareJob());
   const run: JobRun = {
     id: "run-note",
     jobId: "j",
@@ -63,7 +77,7 @@ test("listRuns preserves step runs, statuses and optional notes", () => {
 test("recordRun persists and round-trips a full LLM execution on a step run", () => {
   const db = openDatabase(":memory:");
   const store = new SqliteJobStore(db);
-  store.saveJob({ id: "j", name: "J", description: "d", trigger: "manual", steps: [] });
+  store.saveJob(bareJob());
   const run: JobRun = {
     id: "run-llm",
     jobId: "j",
@@ -96,7 +110,7 @@ test("recordRun persists and round-trips a full LLM execution on a step run", ()
 test("recordRun round-trips a step run's resolved inputs and outputs across types", () => {
   const db = openDatabase(":memory:");
   const store = new SqliteJobStore(db);
-  store.saveJob({ id: "j", name: "J", description: "d", trigger: "manual", steps: [] });
+  store.saveJob(bareJob());
   const run: JobRun = {
     id: "run-io",
     jobId: "j",
@@ -119,7 +133,7 @@ test("recordRun round-trips a step run's resolved inputs and outputs across type
 test("a step run without recorded IO values stays value-free after a round-trip", () => {
   const db = openDatabase(":memory:");
   const store = new SqliteJobStore(db);
-  store.saveJob({ id: "j", name: "J", description: "d", trigger: "manual", steps: [] });
+  store.saveJob(bareJob());
   store.recordRun({
     id: "r",
     jobId: "j",
@@ -135,7 +149,7 @@ test("a step run without recorded IO values stays value-free after a round-trip"
 test("a step run without an execution stays execution-free after a round-trip", () => {
   const db = openDatabase(":memory:");
   const store = new SqliteJobStore(db);
-  store.saveJob({ id: "j", name: "J", description: "d", trigger: "manual", steps: [] });
+  store.saveJob(bareJob());
   store.recordRun({
     id: "r",
     jobId: "j",
@@ -171,6 +185,7 @@ test("saveJob + getJob round-trips a new job with its IO contract", () => {
         outputs: [{ key: "out", type: "string", source: "step", description: "text out" }],
       },
     ],
+    failureHandler: failureHandler(),
   };
   store.saveJob(job);
   assert.deepEqual(store.getJob("echo"), job);
@@ -195,6 +210,7 @@ test("saveJob + getJob round-trips a step's authored systemPrompt", () => {
         outputs: [{ key: "answer", type: "string", source: "step", description: "decision" }],
       },
     ],
+    failureHandler: failureHandler(),
   };
   store.saveJob(job);
   assert.deepEqual(store.getJob("triage"), job);
@@ -221,6 +237,7 @@ test("saveJob + getJob round-trips output guidance and a derived source", () => 
         ],
       },
     ],
+    failureHandler: failureHandler(),
   };
   store.saveJob(job);
   assert.deepEqual(store.getJob("implement"), job);
@@ -229,7 +246,7 @@ test("saveJob + getJob round-trips output guidance and a derived source", () => 
 test("recordRun + listRuns round-trips an execution", () => {
   const db = openDatabase(":memory:");
   const store = new SqliteJobStore(db);
-  store.saveJob({ id: "j", name: "J", description: "d", trigger: "manual", steps: [] });
+  store.saveJob(bareJob());
   const run: JobRun = {
     id: "r1",
     jobId: "j",
@@ -245,7 +262,7 @@ test("recordRun + listRuns round-trips an execution", () => {
 test("recordRun is idempotent: re-recording the same run id transitions running -> succeeded", () => {
   const db = openDatabase(":memory:");
   const store = new SqliteJobStore(db);
-  store.saveJob({ id: "j", name: "J", description: "d", trigger: "manual", steps: [] });
+  store.saveJob(bareJob());
   const running: JobRun = {
     id: "r1",
     jobId: "j",
