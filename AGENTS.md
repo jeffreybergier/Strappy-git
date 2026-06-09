@@ -1,4 +1,4 @@
-# AGENTS.md — enil-cocoa (Strappy)
+# AGENTS.md — Strappy
 
 Context for AI agents working on this repo. Read this first to avoid
 re-deriving setup. (`AGENTS.md` is the agent-native doc for the
@@ -27,9 +27,10 @@ packages, used as an **SDK / library — not the CLI**) talking to
   (macOS host runs Docker Desktop). Node v22, npm 11.
 - The repo is bind-mounted into the container at `/repo/strappy-git`
   (`.:/repo/strappy-git`). **Files written there persist on the Mac host.**
-- ⚠️ **Past gotcha (fixed):** `compose.yml` `working_dir` was once
-  `/repo/enil-cocoa`, which had no host backing — files written there vanished.
-  Always keep `working_dir` == the bind-mount target (`/repo/strappy-git`).
+- ⚠️ **Past gotcha (fixed):** `compose.yml` `working_dir` was once set to a
+  path that didn't match the bind-mount, so it had no host backing — files
+  written there vanished. Always keep `working_dir` == the bind-mount target
+  (`/repo/strappy-git`).
 
 ## Commands
 
@@ -195,8 +196,6 @@ step's `inputs` and record a real `JobRun`.
 5. Optional tidy-up: `*.test.ts` under `src/` get emitted to `dist/` on build
    (inert, gitignored). Add a `tsconfig.build.json` that excludes tests if a
    clean `dist/` is wanted.
-6. Note: `package.json` `name` is still `enil-cocoa` while the repo is
-   `Strappy-git` — rename if desired.
 
 ## House rules
 

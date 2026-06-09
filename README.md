@@ -1,4 +1,4 @@
-# enil-cocoa
+# Strappy
 
 A Node.js + TypeScript web server that watches a whitelist of GitHub repos for
 new issues and pull requests, then runs **ISO 9001-inspired job process maps**
