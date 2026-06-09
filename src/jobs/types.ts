@@ -22,6 +22,12 @@ export interface StepIO {
   // output contract carries the prompt guidance — imperative voice, examples,
   // length/format limits — that helps the model produce a good value.
   guidance?: string;
+  // Output-only marker: this produced value is also surfaced into the generic
+  // failure comment if any step later fails (the poller relays it as the
+  // handler's "attemptedSummary"). Orthogonal to `source` — the output keeps its
+  // real source for threading; this just routes a copy to the error handler. The
+  // dashboard groups marked outputs under "Error". Never set on an input.
+  feedsFailure?: boolean;
 }
 
 export interface ProcessStep {

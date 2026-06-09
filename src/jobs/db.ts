@@ -156,17 +156,19 @@ function hydrateStep(db: DatabaseSync, jobId: string, row: Row): ProcessStep {
 function readIO(db: DatabaseSync, jobId: string, stepId: string, direction: IODirection): StepIO[] {
   return db
     .prepare(
-      "SELECT key, type, source, description, guidance FROM step_io WHERE job_id = ? AND step_id = ? AND direction = ? ORDER BY position",
+      "SELECT key, type, source, description, guidance, feeds_failure FROM step_io WHERE job_id = ? AND step_id = ? AND direction = ? ORDER BY position",
     )
     .all(jobId, stepId, direction)
     .map((r) => {
       const guidance = textOrUndefined(r, "guidance");
+      const feedsFailure = boolFromInt(r, "feeds_failure");
       return {
         key: text(r, "key"),
         type: asIoType(text(r, "type")),
         source: asIoSource(text(r, "source")),
         description: text(r, "description"),
         ...(guidance !== undefined && { guidance }),
+        ...(feedsFailure && { feedsFailure: true }),
       };
     });
 }
@@ -321,8 +323,8 @@ function insertStep(db: DatabaseSync, jobId: string, step: ProcessStep, position
 
 function insertIO(db: DatabaseSync, jobId: string, stepId: string, direction: IODirection, io: StepIO, position: number): void {
   db.prepare(
-    "INSERT INTO step_io (job_id, step_id, direction, position, key, type, source, description, guidance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-  ).run(jobId, stepId, direction, position, io.key, io.type, io.source, io.description, io.guidance ?? null);
+    "INSERT INTO step_io (job_id, step_id, direction, position, key, type, source, description, guidance, feeds_failure) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run(jobId, stepId, direction, position, io.key, io.type, io.source, io.description, io.guidance ?? null, io.feedsFailure ? 1 : 0);
 }
 
 function insertFailureHandler(db: DatabaseSync, jobId: string, handler: FailureHandler): void {
@@ -494,6 +496,14 @@ function textOrUndefined(row: Row, col: string): string | undefined {
   if (v === null || v === undefined) return undefined;
   if (typeof v !== "string") throw new Error(`[Db.textOrUndefined] column "${col}" is not text`);
   return v;
+}
+
+// A 0/1 INTEGER column read back as a boolean; anything else is a corrupt row.
+function boolFromInt(row: Row, col: string): boolean {
+  const v = row[col];
+  if (v === 0 || v === 0n) return false;
+  if (v === 1 || v === 1n) return true;
+  throw new Error(`[Db.boolFromInt] column "${col}" is not 0 or 1`);
 }
 
 // node:sqlite hands back INTEGER columns as number or, for large values, bigint.

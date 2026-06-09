@@ -166,6 +166,12 @@ test("a static input still needs the step to carry static content", () => {
   assert.throws(() => validateJobGraph(graph, []), /static input "systemPrompt" but step carries no static content/);
 });
 
+test("feedsFailure on an input is rejected (the marker is output-only)", () => {
+  const bad: StepIO = { key: "x", type: "string", source: "trigger", description: "", feedsFailure: true };
+  const graph = job([step("a", [bad], [])]);
+  assert.throws(() => validateJobGraph(graph, []), /input "x" sets feedsFailure \(output-only\)/);
+});
+
 test("validateJobGraph validates its arguments", () => {
   assert.throws(() => validateJobGraph(undefined as never, []), /job must be a valid Job/);
   assert.throws(() => validateJobGraph(job([]), undefined as never), /triggerInputs must be an array/);

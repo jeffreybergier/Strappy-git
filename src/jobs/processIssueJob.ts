@@ -4,8 +4,8 @@ import { loadPrompt } from "./prompts.js";
 import { failureHandler } from "./failureHandler.js";
 import { validateJobGraph } from "./validateJobGraph.js";
 
-function io(key: string, type: IoType, source: IoSource, description: string, guidance?: string): StepIO {
-  return { key, type, source, description, ...(guidance !== undefined && { guidance }) };
+function io(key: string, type: IoType, source: IoSource, description: string, guidance?: string, feedsFailure?: boolean): StepIO {
+  return { key, type, source, description, ...(guidance !== undefined && { guidance }), ...(feedsFailure && { feedsFailure: true }) };
 }
 
 // The values the poller seeds onto the run for a github.issue.opened trigger
@@ -110,7 +110,8 @@ export function processIssueJob(): Job {
           io("pullRequestTitle", "string", "step", "Concise PR title describing the change the model made",
             "A short imperative title describing the change you made (e.g. \"Add retry logic to the HTTP client\"). Do not include the issue number — it is appended for you. Keep it under ~70 characters. This is human-facing, so let your sassy Strappy personality show."),
           io("pullRequestSummary", "string", "step", "Markdown summary of the changes, used as the PR body",
-            "A markdown summary of what changed and why, used verbatim as the PR body. Do not invent details that are not in the issue. This is a human-facing reply to your friends (not an in-repo doc), so write it in your full sassy, gay Strappy voice — the markdown formatting does NOT make it straight."),
+            "A markdown summary of what changed and why, used verbatim as the PR body. Do not invent details that are not in the issue. This is a human-facing reply to your friends (not an in-repo doc), so write it in your full sassy, gay Strappy voice — the markdown formatting does NOT make it straight.",
+            true), // feedsFailure: relayed into the failure comment as "attemptedSummary" if a later step fails
           io("cost", "number", "derived", "LLM spend for this step, reported by Pi"),
           io("model", "string", "derived", "Model id Pi ran this step against (PR footer)"),
           io("inputTokens", "integer", "derived", "Prompt tokens Pi reported (PR footer)"),

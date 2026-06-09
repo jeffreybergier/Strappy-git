@@ -26,6 +26,19 @@
       .io-src-failure { background: #f2dede; color: #a94442; }
       .io-src-guided { background: #cdeeeb; color: #27796f; }
       .io-src[title] { cursor: help; }
+      .io-details { margin-bottom: 6px; }
+      .io-toggle { list-style: none; cursor: pointer; outline: none; user-select: none; }
+      .io-toggle::-webkit-details-marker { display: none; }
+      .io-toggle .caret::before { content: "\25B8"; color: #bbb; font-size: 10px; margin-right: 2px; }
+      details[open] > .io-toggle .caret::before { content: "\25BE"; }
+      .io-count { color: #bbb; }
+      .io-cat { font-size: 9px; text-transform: uppercase; letter-spacing: .5px; color: #b0b0b0; margin-top: 4px; }
+      .io-cat-relayed { color: #a94442; }
+      .step-failure { margin-top: 8px; padding-top: 6px; border-top: 1px dashed #e4b9b9; font-size: 11px; color: #a94442; line-height: 1.5; }
+      .step-failure .failure-arrow { margin-right: 3px; }
+      .step-failure-note { margin-top: 3px; color: #b06a68; font-size: 10px; }
+      .relayed-key { font-family: Menlo, Consolas, monospace; background: #f2dede; padding: 0 3px; border-radius: 2px; }
+      .relayed-facts { cursor: help; border-bottom: 1px dotted #c9a0a0; }
       .failure-flow { display: flex; align-items: stretch; margin-top: 12px; }
       .failure-label { display: flex; align-items: center; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #a94442; padding-right: 6px; }
       .failure-arrow { color: #d9534f; }
@@ -103,18 +116,35 @@
                   <div class="panel-heading"><strong><%= step.name %></strong></div>
                   <div class="panel-body">
                     <p class="small"><%= step.description %></p>
-                    <div class="io-label">Inputs</div>
-                    <ul class="io-list">
-                      <% step.inputs.forEach(function (io) { %>
-                        <li><%= io.key %> <span class="io-type">:<%= io.type %></span><% if (io.source && io.source !== "step") { %> <span class="io-src io-src-<%= io.source %>"<% if (io.source === "static" && step.systemPrompt) { %> title="<%= step.systemPrompt %>"<% } %>><%= io.source %></span><% } %></li>
-                      <% }); %>
-                    </ul>
+                    <details class="io-details">
+                      <summary class="io-label io-toggle"><span class="caret"></span>Inputs <span class="io-count">(<%= step.inputs.length %>)</span></summary>
+                      <ul class="io-list">
+                        <% step.inputs.forEach(function (io) { %>
+                          <li><%= io.key %> <span class="io-type">:<%= io.type %></span><% if (io.source && io.source !== "step") { %> <span class="io-src io-src-<%= io.source %>"<% if (io.source === "static" && step.systemPrompt) { %> title="<%= step.systemPrompt %>"<% } %>><%= io.source %></span><% } %></li>
+                        <% }); %>
+                      </ul>
+                    </details>
                     <div class="io-label">Outputs</div>
-                    <ul class="io-list">
-                      <% step.outputs.forEach(function (io) { %>
-                        <li><%= io.key %> <span class="io-type">:<%= io.type %></span><% if (io.source && io.source !== "step") { %> <span class="io-src io-src-<%= io.source %>"><%= io.source %></span><% } %><% if (io.guidance) { %> <span class="io-src io-src-guided" title="<%= io.guidance %>">guided</span><% } %></li>
-                      <% }); %>
-                    </ul>
+                    <% step.outputGroups.forEach(function (group) { %>
+                      <div class="io-cat io-cat-<%= group.key %>"><%= group.label %></div>
+                      <ul class="io-list">
+                        <% group.items.forEach(function (io) { %>
+                          <li><%= io.key %> <span class="io-type">:<%= io.type %></span><% if (io.source && io.source !== "step") { %> <span class="io-src io-src-<%= io.source %>"><%= io.source %></span><% } %><% if (io.guidance) { %> <span class="io-src io-src-guided" title="<%= io.guidance %>">guided</span><% } %></li>
+                        <% }); %>
+                      </ul>
+                    <% }); %>
+                    <% const factsTip = "Always sent on any failure: failedStep, errorNote, runId, plus the repo and issueNumber that address the comment."; %>
+                    <div class="step-failure">
+                      <span class="failure-arrow">&#10007;</span>if this fails, the error step gets
+                      <% if (step.relayedOnFailure.length) { %>
+                        <% step.relayedOnFailure.forEach(function (key) { %><span class="relayed-key"><%= key %></span> <% }); %>+ <span class="relayed-facts" title="<%= factsTip %>">run facts</span>
+                      <% } else { %>
+                        <span class="relayed-facts" title="<%= factsTip %>">run facts</span> only
+                      <% } %>
+                      <% if (step.producesOnFailure.length) { %>
+                        <div class="step-failure-note"><% step.producesOnFailure.forEach(function (key) { %><span class="relayed-key"><%= key %></span> <% }); %>is produced here &mdash; relayed only if a <em>later</em> step fails</div>
+                      <% } %>
+                    </div>
                   </div>
                 </div>
               <% }); %>
@@ -163,7 +193,7 @@
         ];
         const OUTPUT_GROUPS = [
           ["step", "Produced"], ["derived", "Derived"],
-          ["pass", "Passed through"], ["receipt", "Receipts"],
+          ["pass", "Passed through"], ["receipt", "Receipts"], ["relayed", "Relayed on failure"],
         ];
 
         const openRuns = new Set();
@@ -341,9 +371,12 @@
           return '<tr class="io-cat-row"><td class="col-status"></td><td class="col-name io-cat-indent">' + esc(label) + '</td><td class="col-time"></td></tr>';
         }
 
+        // feedsFailure outputs bucket under "Relayed on failure" regardless of
+        // source, matching the process-map grouping (so the two views share one
+        // legend). The key "relayed" lines up with OUTPUT_GROUPS above.
         function sourceMap(contract) {
           const map = {};
-          (contract || []).forEach((io) => { map[io.key] = io.source; });
+          (contract || []).forEach((io) => { map[io.key] = io.feedsFailure ? "relayed" : io.source; });
           return map;
         }
 

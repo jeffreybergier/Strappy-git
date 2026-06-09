@@ -78,26 +78,42 @@ export function failureComment(runId: string, detail: string, summary?: string |
   return lines.join("\n");
 }
 
-// The model's PR summary, read off whichever recorded step carried it — the
-// implement step produces it, later steps carry it as a pass value (so a failed
-// commit-push still has it on the inputs it resolved before failing). Lets a
-// failure AFTER the model spoke relay what it set out to do, reading the recorded
-// run only (no LLM call). Returns null when no step carried one (a failure at or
-// before the implement step).
-export function attemptedSummary(run: JobRun): string | null {
+// The output keys the job marks `feedsFailure` — the values to relay into the
+// failure comment. Derived from the graph (not hardcoded), so renaming or moving
+// the summary output updates the failure path automatically.
+export function failureOutputKeys(job: Job): string[] {
+  if (!job || !Array.isArray(job.steps)) throw new Error("[Poller.failureOutputKeys] job must be a Job");
+  const keys = new Set<string>();
+  for (const step of job.steps) {
+    for (const output of step.outputs) if (output.feedsFailure) keys.add(output.key);
+  }
+  return [...keys];
+}
+
+// The model's best-effort summary, read off whichever recorded step carried one
+// of the `feedsFailure` keys — the producer step records it on its outputs, later
+// steps carry it as a pass value (so a failed commit-push still has it on the
+// inputs it resolved before failing). Lets a failure AFTER the model spoke relay
+// what it set out to do, reading the recorded run only (no LLM call). Returns
+// null when no step carried a value (a failure at or before the producer).
+export function attemptedSummary(run: JobRun, keys: readonly string[]): string | null {
   if (run === null || typeof run !== "object" || !Array.isArray(run.stepRuns)) {
     throw new Error("[Poller.attemptedSummary] run must be a JobRun");
   }
+  if (!Array.isArray(keys)) throw new Error("[Poller.attemptedSummary] keys must be an array");
   for (const step of run.stepRuns) {
-    const summary = pullRequestSummaryOf(step);
+    const summary = summaryOf(step, keys);
     if (summary !== null) return summary;
   }
   return null;
 }
 
-function pullRequestSummaryOf(step: StepRun): string | null {
-  const value = step.outputs?.pullRequestSummary ?? step.inputs?.pullRequestSummary;
-  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+function summaryOf(step: StepRun, keys: readonly string[]): string | null {
+  for (const key of keys) {
+    const value = step.outputs?.[key] ?? step.inputs?.[key];
+    if (typeof value === "string" && value.trim() !== "") return value.trim();
+  }
+  return null;
 }
 
 function message(error: unknown): string {
@@ -272,7 +288,7 @@ export class IssuePoller {
   private failureBody(item: QueueItem, run: JobRun): string {
     const rejection = this.promptCheckRejection(run);
     if (rejection !== null) return promptCheckComment(false, rejection);
-    return failureComment(item.runId, failureNote(run), attemptedSummary(run));
+    return failureComment(item.runId, failureNote(run), attemptedSummary(run, failureOutputKeys(this.job)));
   }
 
   // The guard model's voiced reason when THIS run failed at the security gate, or
