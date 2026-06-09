@@ -3,7 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 // Bump whenever SCHEMA_SQL changes shape. openDatabase() rebuilds an on-disk DB
 // stamped with an older version, so a stale file self-heals instead of crashing
 // on a column it predates (the data dir is disposable by design).
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 // Relational mirror of the ISO 9001 process-map model in types.ts.
 // process_steps keep `position` so ordered steps survive a round-trip;
@@ -39,6 +39,28 @@ CREATE TABLE IF NOT EXISTS step_io (
   guidance    TEXT,
   PRIMARY KEY (job_id, step_id, direction, key),
   FOREIGN KEY (job_id, step_id) REFERENCES process_steps(job_id, id) ON DELETE CASCADE
+);
+
+-- The single generic failure handler each job routes to on any step failure
+-- (one row per job). Its inputs mirror step_io but are input-only and keyed by
+-- job_id alone; 'failure' is permitted here (run-level facts) but deliberately
+-- NOT in step_io, so a step can never carry a failure-sourced IO.
+CREATE TABLE IF NOT EXISTS failure_handlers (
+  job_id      TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+  id          TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  description TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS failure_handler_io (
+  job_id      TEXT NOT NULL REFERENCES failure_handlers(job_id) ON DELETE CASCADE,
+  position    INTEGER NOT NULL,
+  key         TEXT NOT NULL,
+  type        TEXT NOT NULL,
+  source      TEXT NOT NULL CHECK (source IN ('trigger', 'static', 'step', 'pass', 'derived', 'receipt', 'failure')),
+  description TEXT NOT NULL,
+  guidance    TEXT,
+  PRIMARY KEY (job_id, key)
 );
 
 CREATE TABLE IF NOT EXISTS job_runs (

@@ -5,6 +5,7 @@ import { createLogger } from "../logger.js";
 import { applySchema, SCHEMA_VERSION } from "./schema.js";
 import { asIoSource, asIoType } from "./io.js";
 import type {
+  FailureHandler,
   IoValues,
   Job,
   JobRun,
@@ -107,7 +108,35 @@ function hydrateJob(db: DatabaseSync, row: Row): Job {
     description: text(row, "description"),
     trigger: text(row, "trigger"),
     steps: stepRows.map((s) => hydrateStep(db, id, s)),
+    failureHandler: readFailureHandler(db, id),
   };
+}
+
+function readFailureHandler(db: DatabaseSync, jobId: string): FailureHandler {
+  const row = db.prepare("SELECT id, name, description FROM failure_handlers WHERE job_id = ?").get(jobId);
+  if (row === undefined) throw new Error(`[Db.readFailureHandler] job "${jobId}" has no failure handler`);
+  return {
+    id: text(row, "id"),
+    name: text(row, "name"),
+    description: text(row, "description"),
+    inputs: readFailureHandlerIO(db, jobId),
+  };
+}
+
+function readFailureHandlerIO(db: DatabaseSync, jobId: string): StepIO[] {
+  return db
+    .prepare("SELECT key, type, source, description, guidance FROM failure_handler_io WHERE job_id = ? ORDER BY position")
+    .all(jobId)
+    .map((r) => {
+      const guidance = textOrUndefined(r, "guidance");
+      return {
+        key: text(r, "key"),
+        type: asIoType(text(r, "type")),
+        source: asIoSource(text(r, "source")),
+        description: text(r, "description"),
+        ...(guidance !== undefined && { guidance }),
+      };
+    });
 }
 
 function hydrateStep(db: DatabaseSync, jobId: string, row: Row): ProcessStep {
@@ -234,6 +263,7 @@ export function insertJob(db: DatabaseSync, job: Job): void {
     job.trigger,
   );
   job.steps.forEach((step, position) => insertStep(db, job.id, step, position));
+  insertFailureHandler(db, job.id, job.failureHandler);
 }
 
 // Re-applies canonical (code-defined) job definitions so the dashboard tracks the
@@ -259,6 +289,7 @@ export function upsertJob(db: DatabaseSync, job: Job): void {
         job.id,
       );
       db.prepare("DELETE FROM process_steps WHERE job_id = ?").run(job.id); // cascades step_io
+      db.prepare("DELETE FROM failure_handlers WHERE job_id = ?").run(job.id); // cascades failure_handler_io
     } else {
       db.prepare("INSERT INTO jobs (id, name, description, trigger) VALUES (?, ?, ?, ?)").run(
         job.id,
@@ -268,6 +299,7 @@ export function upsertJob(db: DatabaseSync, job: Job): void {
       );
     }
     job.steps.forEach((step, position) => insertStep(db, job.id, step, position));
+    insertFailureHandler(db, job.id, job.failureHandler);
   });
 }
 
@@ -291,6 +323,22 @@ function insertIO(db: DatabaseSync, jobId: string, stepId: string, direction: IO
   db.prepare(
     "INSERT INTO step_io (job_id, step_id, direction, position, key, type, source, description, guidance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
   ).run(jobId, stepId, direction, position, io.key, io.type, io.source, io.description, io.guidance ?? null);
+}
+
+function insertFailureHandler(db: DatabaseSync, jobId: string, handler: FailureHandler): void {
+  db.prepare("INSERT INTO failure_handlers (job_id, id, name, description) VALUES (?, ?, ?, ?)").run(
+    jobId,
+    handler.id,
+    handler.name,
+    handler.description,
+  );
+  handler.inputs.forEach((io, position) => insertFailureHandlerIO(db, jobId, io, position));
+}
+
+function insertFailureHandlerIO(db: DatabaseSync, jobId: string, io: StepIO, position: number): void {
+  db.prepare(
+    "INSERT INTO failure_handler_io (job_id, position, key, type, source, description, guidance) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  ).run(jobId, position, io.key, io.type, io.source, io.description, io.guidance ?? null);
 }
 
 // Idempotent record of one run: the existing row is deleted (the ON DELETE
@@ -490,6 +538,9 @@ function asRunStatus(v: string): RunStatus {
 function validateJob(job: Job): void {
   if (!job || typeof job.id !== "string") throw new Error("[Db.validateJob] job.id must be a string");
   if (!Array.isArray(job.steps)) throw new Error("[Db.validateJob] job.steps must be an array");
+  if (!job.failureHandler || !Array.isArray(job.failureHandler.inputs)) {
+    throw new Error("[Db.validateJob] job.failureHandler must declare inputs");
+  }
 }
 
 function validateRun(run: JobRun): void {

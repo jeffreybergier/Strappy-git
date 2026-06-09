@@ -23,8 +23,13 @@
       .io-src-pass { background: #f5f5f5; color: #999; border: 1px solid #e3e3e3; }
       .io-src-derived { background: #e8e0f5; color: #6f5499; }
       .io-src-receipt { background: #dff0d8; color: #3c763d; }
+      .io-src-failure { background: #f2dede; color: #a94442; }
       .io-src-guided { background: #cdeeeb; color: #27796f; }
       .io-src[title] { cursor: help; }
+      .failure-flow { display: flex; align-items: stretch; margin-top: 12px; }
+      .failure-label { display: flex; align-items: center; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #a94442; padding-right: 6px; }
+      .failure-arrow { color: #d9534f; }
+      .failure-card { flex: 0 1 300px; min-width: 220px; }
       .trigger-card { flex: 0 1 200px; min-width: 180px; }
       .trigger-card .panel-heading { background-color: #d9edf7; }
       .runs-table { table-layout: fixed; }
@@ -114,6 +119,24 @@
                 </div>
               <% }); %>
             </div>
+            <% if (job.failureHandler) { %>
+              <div class="failure-flow">
+                <span class="failure-label">Any step<br />&#10007; on failure</span>
+                <span class="step-arrow failure-arrow">&rarr;</span>
+                <div class="panel panel-danger step-card failure-card">
+                  <div class="panel-heading"><strong><%= job.failureHandler.name %></strong></div>
+                  <div class="panel-body">
+                    <p class="small"><%= job.failureHandler.description %></p>
+                    <div class="io-label">Receives</div>
+                    <ul class="io-list">
+                      <% job.failureHandler.inputs.forEach(function (io) { %>
+                        <li><%= io.key %> <span class="io-type">:<%= io.type %></span> <span class="io-src io-src-<%= io.source %>"><%= io.source %></span></li>
+                      <% }); %>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            <% } %>
           </div>
         </div>
       <% }); %>

@@ -6,7 +6,7 @@ import { StepKindRegistry } from "../jobs/stepKinds.js";
 import type { StepValues } from "../jobs/stepKinds.js";
 import { promptCheckComment } from "../jobs/githubKinds.js";
 import type { JobWriteStore, TriggerLedger } from "../jobs/store.js";
-import type { Job, JobRun } from "../jobs/types.js";
+import type { Job, JobRun, StepRun } from "../jobs/types.js";
 import { uuidStem } from "./git.js";
 import type { GitHubClient, IssueRef } from "./client.js";
 
@@ -46,19 +46,21 @@ export function failureNote(run: JobRun): string {
 }
 
 // The issue comment posted when a generic job step fails (not the prompt check —
-// that gets its own promptCheckComment). This is fixed, harness-written text —
-// NOT the model's voice — so it stays plain and factual: faking Strappy's sass
-// here would put words in the mouth of a model that never spoke. The underlying
-// error is a verbatim ``` fence (it is a plain technical message, not markdown).
+// that gets its own promptCheckComment). The harness frame is fixed, plain text —
+// NOT the model's voice — so faking Strappy's sass here never puts words in a
+// model's mouth. The underlying error is a verbatim ``` fence (it is a plain
+// technical message, not markdown). When the model spoke before the failure, its
+// own recorded PR summary is appended verbatim under an attributed header (its
+// genuine words, never synthesized) so a human learns what it set out to do.
 // States nothing was pushed and how to retry, so a human knows what happened.
-export function failureComment(runId: string, detail: string): string {
+export function failureComment(runId: string, detail: string, summary?: string | null): string {
   if (typeof runId !== "string" || runId.trim() === "") {
     throw new Error("[Poller.failureComment] runId must be a non-empty string");
   }
   if (typeof detail !== "string" || detail.trim() === "") {
     throw new Error("[Poller.failureComment] detail must be a non-empty string");
   }
-  return [
+  const lines = [
     "**⚠️ Job failed**",
     "",
     "---",
@@ -68,9 +70,34 @@ export function failureComment(runId: string, detail: string): string {
     "```",
     detail.trim(),
     "```",
-    "",
-    "This is an automatic report from the harness. To retry, reply here — a comment from a whitelisted user re-runs the job on the whole thread.",
-  ].join("\n");
+  ];
+  if (typeof summary === "string" && summary.trim() !== "") {
+    lines.push("", "---", "", "**What the model was trying to do**", "", summary.trim());
+  }
+  lines.push("", "This is an automatic report from the harness. To retry, reply here — a comment from a whitelisted user re-runs the job on the whole thread.");
+  return lines.join("\n");
+}
+
+// The model's PR summary, read off whichever recorded step carried it — the
+// implement step produces it, later steps carry it as a pass value (so a failed
+// commit-push still has it on the inputs it resolved before failing). Lets a
+// failure AFTER the model spoke relay what it set out to do, reading the recorded
+// run only (no LLM call). Returns null when no step carried one (a failure at or
+// before the implement step).
+export function attemptedSummary(run: JobRun): string | null {
+  if (run === null || typeof run !== "object" || !Array.isArray(run.stepRuns)) {
+    throw new Error("[Poller.attemptedSummary] run must be a JobRun");
+  }
+  for (const step of run.stepRuns) {
+    const summary = pullRequestSummaryOf(step);
+    if (summary !== null) return summary;
+  }
+  return null;
+}
+
+function pullRequestSummaryOf(step: StepRun): string | null {
+  const value = step.outputs?.pullRequestSummary ?? step.inputs?.pullRequestSummary;
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
 }
 
 function message(error: unknown): string {
@@ -244,7 +271,8 @@ export class IssuePoller {
   // any other failure gets the generic harness report.
   private failureBody(item: QueueItem, run: JobRun): string {
     const rejection = this.promptCheckRejection(run);
-    return rejection !== null ? promptCheckComment(false, rejection) : failureComment(item.runId, failureNote(run));
+    if (rejection !== null) return promptCheckComment(false, rejection);
+    return failureComment(item.runId, failureNote(run), attemptedSummary(run));
   }
 
   // The guard model's voiced reason when THIS run failed at the security gate, or
