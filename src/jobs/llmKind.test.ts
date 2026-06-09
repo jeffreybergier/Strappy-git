@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { llmStepKind } from "./llmKind.js";
 import type { StepContext } from "./stepKinds.js";
 import type { LlmExecution, ProcessStep } from "./types.js";
+import { StructuredRunError } from "../llm/pi.js";
 import type { RunStructuredOptions, StructuredResult } from "../llm/pi.js";
 
 function execution(): LlmExecution {
@@ -71,6 +72,21 @@ test("llmStepKind derives the submit schema from outputs, records the execution,
   assert.equal(seenTool, "submit_ask");
   assert.equal(seenCwd, "/tmp/jobs/uuid");
   assert.deepEqual(seenKeys, ["commitMessage", "pullRequestSummary"]);
+});
+
+test("llmStepKind records execution when the structured call fails after the model ran", async () => {
+  let recorded: LlmExecution | undefined;
+  const exec = execution();
+  const kind = llmStepKind(async () => {
+    throw new StructuredRunError("model did not call submit_ask", exec);
+  });
+  await assert.rejects(
+    async () => {
+      await kind(ctx({ userPrompt: "go", workingDirectory: "/tmp/r" }, ["out"], (e) => { recorded = e; }));
+    },
+    /model did not call submit_ask/,
+  );
+  assert.deepEqual(recorded, exec);
 });
 
 test("llmStepKind fills a derived `cost` output from the execution and keeps it out of the model schema", async () => {

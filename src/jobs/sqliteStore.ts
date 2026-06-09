@@ -1,5 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import {
+  claimTriggerProcessing,
   insertJob,
   isTriggerProcessed,
   lastProcessedComment,
@@ -14,7 +15,7 @@ import type { JobReadStore, JobWriteStore, TriggerLedger } from "./store.js";
 import type { Job, JobRun } from "./types.js";
 
 // JobReadStore backed by SQLite. Reads hydrate full Job/JobRun trees; the
-// write methods are the persistence seam for the future scheduler.
+// write methods are the persistence seam for the scheduler.
 export class SqliteJobStore implements JobReadStore, JobWriteStore, TriggerLedger {
   private readonly db: DatabaseSync;
 
@@ -54,11 +55,15 @@ export class SqliteJobStore implements JobReadStore, JobWriteStore, TriggerLedge
     return lastProcessedComment(this.db, repo, issueNumber);
   }
 
+  claimProcessing(repo: string, issueNumber: number, runId: string, lastCommentId: number): boolean {
+    return claimTriggerProcessing(this.db, repo, issueNumber, runId, lastCommentId);
+  }
+
   markProcessing(repo: string, issueNumber: number, runId: string, lastCommentId: number): void {
     markTriggerProcessing(this.db, repo, issueNumber, runId, lastCommentId);
   }
 
-  setStatus(repo: string, issueNumber: number, status: string): void {
-    setTriggerStatus(this.db, repo, issueNumber, status);
+  setStatus(repo: string, issueNumber: number, runId: string, status: string): void {
+    setTriggerStatus(this.db, repo, issueNumber, runId, status);
   }
 }

@@ -65,6 +65,12 @@ function comment(id: number, author: string, body: string): IssueComment {
   return { id, author, body, createdAt: "2030-01-01T00:00:00.000Z" };
 }
 
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
 // listComments reads the inbound thread; commentOnIssue records into the outbound
 // sink so failure-reporting is asserted. The remaining methods satisfy the
 // interface but are never called under the stub registry.
@@ -164,6 +170,49 @@ test("poller decides via the ledger — a handled issue is never re-processed", 
   await poller.whenIdle();
   await poller.tick();
   await poller.whenIdle();
+  assert.equal(store.listRuns().length, 1);
+});
+
+test("overlapping ticks join the in-flight scan instead of enqueueing twice", async () => {
+  const listedComments = deferred();
+  const releaseComments = deferred();
+  let repoLists = 0;
+  let commentLists = 0;
+  const db = openDatabase(":memory:");
+  const store = new SqliteJobStore(db);
+  const job = processIssueJob();
+  store.saveJob(job);
+  const client: GitHubClient = {
+    listAccessibleRepos: async () => { repoLists += 1; return ["o/r"]; },
+    listOpenIssues: async () => [issue("o/r", 31, "jeffreybergier")],
+    getIssue: async () => { throw new Error("getIssue not used in stub run"); },
+    listComments: async () => {
+      commentLists += 1;
+      listedComments.resolve();
+      await releaseComments.promise;
+      return [];
+    },
+    getDefaultBranch: async () => "main",
+    openPullRequest: async () => ({ number: 1, url: "x" }),
+    commentOnIssue: async () => 1,
+    closeIssue: async () => {},
+  };
+  const poller = new IssuePoller({
+    client,
+    store,
+    registry: stubRegistryForJob(job),
+    job,
+    whitelist: ["jeffreybergier"],
+    intervalMs: 1000,
+  });
+  const first = poller.tick();
+  await listedComments.promise;
+  const second = poller.tick();
+  releaseComments.resolve();
+  await Promise.all([first, second]);
+  await poller.whenIdle();
+  assert.equal(repoLists, 1);
+  assert.equal(commentLists, 1);
   assert.equal(store.listRuns().length, 1);
 });
 

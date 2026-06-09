@@ -149,11 +149,11 @@ test("unconsumedOutputs flags a pass value carried but never consumed downstream
   assert.deepEqual(unconsumedOutputs(graph), [{ stepId: "b", key: "tok" }]);
 });
 
-test("the real job surfaces only the terminal prUrl as an audit candidate", () => {
-  // cost/model/tokens are now threaded into the PR footer (consumed by open-pr),
-  // so the lone dangling output is the PR URL, which nothing downstream reads.
+test("the real job has no dangling outputs", () => {
+  // cost/model/tokens are threaded into the PR footer, and prUrl is marked as a
+  // terminal receipt because nothing downstream reads it.
   const candidates = unconsumedOutputs(processIssueJob()).map((d) => `${d.stepId}.${d.key}`);
-  assert.deepEqual(candidates, ["open-pr.prUrl"]);
+  assert.deepEqual(candidates, []);
 });
 
 test("a static input is sourced from the step, not a producer", () => {

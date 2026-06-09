@@ -17,7 +17,7 @@ function listFromEnv(name: string): string[] {
 
 // The default model id, shared by the implement step and used as the fallback
 // for the review step, so OPENROUTER_REVIEW_MODEL only has to be set to differ.
-const defaultModel = process.env.OPENROUTER_MODEL ?? "meta-llama/llama-3.3-70b-instruct";
+const defaultModel = process.env.OPENROUTER_MODEL ?? "deepseek/deepseek-v4-pro";
 
 export const config = {
   port: intFromEnv("PORT", 3000),

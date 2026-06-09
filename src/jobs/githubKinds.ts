@@ -18,9 +18,7 @@ export interface GitHubKindDeps {
 
 // Live registry for processIssueJob: the same kind keys defaultStepKinds() stubs,
 // but each backed by a real git/GitHub/LLM action. Inputs are read off ctx
-// (threaded by the scheduler); outputs feed the next step. The PR-flow kinds
-// (createBranch/commitPush/...) stay registered for the follow-up even though the
-// implement-only job does not reference them yet.
+// (threaded by the scheduler); outputs feed the next step.
 // The per-run workspace: <tempDir>/jobs/<jobUuid>. The clone lands under here and
 // the whole dir is removed on teardown, so one run can never touch another's
 // files. Single source of the path so clone and cleanup can't drift.

@@ -157,7 +157,7 @@ export function processIssueJob(): Job {
           io("outputTokens", "integer", "step", "Completion tokens, rendered into the PR body footer"),
           io("userPrompt", "string", "pass", "Carried to the review step (the original request)"),
           io("workingDirectory", "string", "pass", "Carried to the review step (the clone to inspect)")],
-        [io("prNumber", "number", "step", "Created PR number"), io("prUrl", "string", "step", "PR URL"),
+        [io("prNumber", "number", "step", "Created PR number"), io("prUrl", "string", "receipt", "Terminal: created PR URL"),
           io("userPrompt", "string", "pass", "Carried to the review step"),
           io("workingDirectory", "string", "pass", "Carried to the review step")]),
       step("review", "llm.review", "Code Review",

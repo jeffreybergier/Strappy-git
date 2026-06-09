@@ -155,6 +155,7 @@ export class IssuePoller {
   private readonly cleanup?: (triggerInputs: StepValues) => Promise<void> | void;
   private readonly queue: SequentialQueue<QueueItem>;
   private timer: ReturnType<typeof setInterval> | null = null;
+  private ticking: Promise<void> | null = null;
 
   constructor(deps: IssuePollerDeps) {
     if (!deps || !deps.client) throw new Error("[IssuePoller] client is required");
@@ -199,6 +200,15 @@ export class IssuePoller {
   }
 
   async tick(): Promise<void> {
+    if (this.ticking !== null) {
+      log.warn("tick", "previous tick still running; joining it instead of starting another");
+      return this.ticking;
+    }
+    this.ticking = this.runTick().finally(() => { this.ticking = null; });
+    return this.ticking;
+  }
+
+  private async runTick(): Promise<void> {
     const repos = await this.resolveRepos();
     log.info("tick", `discovered ${repos.length} repo(s): ${repos.join(", ") || "(none)"}`);
     for (const repo of repos) await this.pollRepo(repo);
@@ -233,7 +243,10 @@ export class IssuePoller {
     if (commentId === null) return;
     const jobUuid = randomUUID();
     const runId = formatRunId(issue.repo, issue.number, this.job.id, jobUuid);
-    this.store.markProcessing(issue.repo, issue.number, runId, commentId);
+    if (!this.store.claimProcessing(issue.repo, issue.number, runId, commentId)) {
+      log.info("skip", `${issue.repo}#${issue.number}: trigger was already claimed`);
+      return;
+    }
     this.store.recordRun(queuedRun(this.job, runId, new Date().toISOString())); // visible as queued until it starts
     this.queue.enqueue({ repo: issue.repo, issueNumber: issue.number, issueAuthor: issue.author, jobUuid, runId });
     log.info("enqueue", `${issue.repo}#${issue.number} queued (depth ${this.queue.size}, comment ${commentId})`);
@@ -274,11 +287,11 @@ export class IssuePoller {
         { repo: item.repo, issueNumber: item.issueNumber, issueAuthor: item.issueAuthor, jobUuid: item.jobUuid },
         { registry: this.registry, store: this.store, newRunId: () => item.runId, ...(this.cleanup && { cleanup: this.cleanup }) },
       );
-      this.store.setStatus(item.repo, item.issueNumber, run.status);
+      this.store.setStatus(item.repo, item.issueNumber, item.runId, run.status);
       log.info("run", `${item.repo}#${item.issueNumber} -> ${run.status} (${item.runId})`);
       if (run.status === "failed") await this.postComment(item, this.failureBody(item, run));
     } catch (error) {
-      this.store.setStatus(item.repo, item.issueNumber, "failed");
+      this.store.setStatus(item.repo, item.issueNumber, item.runId, "failed");
       log.error("run", `${item.repo}#${item.issueNumber} crashed`, error);
       await this.postComment(item, failureComment(item.runId, message(error)));
     }

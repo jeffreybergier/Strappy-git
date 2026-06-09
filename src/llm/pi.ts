@@ -29,6 +29,17 @@ export interface StructuredResult {
   execution: LlmExecution;
 }
 
+export class StructuredRunError extends Error {
+  constructor(message: string, readonly execution: LlmExecution) {
+    super(message);
+    this.name = "StructuredRunError";
+  }
+}
+
+export function executionFromStructuredError(error: unknown): LlmExecution | undefined {
+  return error instanceof StructuredRunError ? error.execution : undefined;
+}
+
 // Tuning for a structured call.
 export interface RunStructuredOptions {
   // Default true: the model keeps the built-in read/write/edit/bash tools
@@ -143,7 +154,9 @@ export async function runStructured(
     log.info("runStructured", `prompting ${config.openRouter.provider}/${config.openRouter.model} for ${toolName} in ${cwd}`);
     execution = await collect(session, prompt);
     logExecution(execution);
-    if (values === undefined) throw new Error(`[PiClient.runStructured] model did not call ${toolName}`);
+    if (values === undefined) {
+      throw new StructuredRunError(`[PiClient.runStructured] model did not call ${toolName}`, execution);
+    }
     logValues(values);
     return { values, execution };
   } catch (error) {
@@ -155,7 +168,8 @@ export async function runStructured(
     // most worth keeping. Best-effort (saveTranscript never throws); when the
     // session never opened, just discard the temp dir so it can't leak. The
     // rendered path is stamped onto the execution so a recorded run links to the
-    // artifact (mutating execution here lands in the already-evaluated return).
+    // artifact (mutating execution here lands in the already-evaluated return or
+    // StructuredRunError).
     if (sm !== undefined && session !== undefined) {
       const transcriptPath = await saveTranscript(sm, runId, session);
       if (execution !== undefined && transcriptPath !== undefined) execution.transcriptPath = transcriptPath;

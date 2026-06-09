@@ -1,4 +1,4 @@
-import { runStructured } from "../llm/pi.js";
+import { executionFromStructuredError, runStructured } from "../llm/pi.js";
 import type { RunStructuredOptions, StructuredResult } from "../llm/pi.js";
 import { outputsToSchema } from "../llm/schema.js";
 import { transcriptId } from "./stepKinds.js";
@@ -48,17 +48,23 @@ export function llmStepKind(run: RunStructured = runStructured, modelId?: string
   }
   return async (ctx) => {
     const schema = outputsToSchema(modelOutputs(ctx.step.outputs));
-    const { values, execution } = await run(
-      readInput(ctx, "userPrompt"),
-      readOptionalInput(ctx, "systemPrompt"),
-      schema,
-      toolName(ctx),
-      readInput(ctx, "workingDirectory"),
-      transcriptId(ctx),
-      modelId !== undefined ? { model: modelId } : undefined,
-    );
-    ctx.recordExecution?.(execution);
-    return { ...values, ...derivedOutputs(ctx.step.outputs, execution) } as StepValues;
+    try {
+      const { values, execution } = await run(
+        readInput(ctx, "userPrompt"),
+        readOptionalInput(ctx, "systemPrompt"),
+        schema,
+        toolName(ctx),
+        readInput(ctx, "workingDirectory"),
+        transcriptId(ctx),
+        modelId !== undefined ? { model: modelId } : undefined,
+      );
+      ctx.recordExecution?.(execution);
+      return { ...values, ...derivedOutputs(ctx.step.outputs, execution) } as StepValues;
+    } catch (error) {
+      const execution = executionFromStructuredError(error);
+      if (execution !== undefined) ctx.recordExecution?.(execution);
+      throw error;
+    }
   };
 }
 

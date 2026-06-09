@@ -1,5 +1,5 @@
 import { randomInt } from "node:crypto";
-import { runStructured } from "../llm/pi.js";
+import { executionFromStructuredError, runStructured } from "../llm/pi.js";
 import type { StructuredResult } from "../llm/pi.js";
 import { outputsToSchema } from "../llm/schema.js";
 import { createLogger } from "../logger.js";
@@ -64,10 +64,7 @@ export function securityStepKind(run: RunStructured = runStructured): StepExecut
     const systemPrompt = readInput(ctx, "systemPrompt");
     const token = mintToken();
     // No built-in tools, so cwd binds nothing — it only anchors the transcript.
-    const { values, execution } = await run(
-      scanRequest(userPrompt), withToken(systemPrompt, token), outputsToSchema(VERDICT_SCHEMA),
-      VERDICT_TOOL, process.cwd(), transcriptId(ctx), { builtinTools: false },
-    );
+    const { values, execution } = await runSecurity(ctx, run, userPrompt, systemPrompt, token);
     ctx.recordExecution?.(execution);
     verifyToken(values, token); // integrity before content: a forged call is rejected outright
     const verdict = readVerdict(values);
@@ -77,6 +74,19 @@ export function securityStepKind(run: RunStructured = runStructured): StepExecut
     log.info("scan", `issue cleared the security screen: ${verdict.reason}`);
     return { safe: true, securityReason: verdict.reason } as StepValues;
   };
+}
+
+async function runSecurity(ctx: StepContext, run: RunStructured, userPrompt: string, systemPrompt: string, token: string): Promise<StructuredResult> {
+  try {
+    return await run(
+      scanRequest(userPrompt), withToken(systemPrompt, token), outputsToSchema(VERDICT_SCHEMA),
+      VERDICT_TOOL, process.cwd(), transcriptId(ctx), { builtinTools: false },
+    );
+  } catch (error) {
+    const execution = executionFromStructuredError(error);
+    if (execution !== undefined) ctx.recordExecution?.(execution);
+    throw error;
+  }
 }
 
 // Wraps the issue text in explicit markers and restates that it is data, so the

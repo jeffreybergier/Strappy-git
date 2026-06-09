@@ -21,8 +21,9 @@ export interface JobWriteStore {
 export interface TriggerLedger {
   isProcessed(repo: string, issueNumber: number): boolean;
   lastProcessedComment(repo: string, issueNumber: number): number;
+  claimProcessing(repo: string, issueNumber: number, runId: string, lastCommentId: number): boolean;
   markProcessing(repo: string, issueNumber: number, runId: string, lastCommentId: number): void;
-  setStatus(repo: string, issueNumber: number, status: string): void;
+  setStatus(repo: string, issueNumber: number, runId: string, status: string): void;
 }
 
 export class JobStore implements JobReadStore {

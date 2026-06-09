@@ -5,7 +5,7 @@
   "type": "module",
   "description": "GitHub-driven AI agent harness: watches whitelisted repos and runs ISO 9001-style job process maps through pi.dev + OpenRouter.",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.19.0"
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",

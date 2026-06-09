@@ -18,6 +18,15 @@ function bareJob(): Job {
   return { id: "j", name: "J", description: "d", trigger: "manual", steps: [], failureHandler: failureHandler() };
 }
 
+function triggerStatus(db: ReturnType<typeof openDatabase>, repo: string, issueNumber: number): string {
+  const row = db
+    .prepare("SELECT status FROM processed_triggers WHERE repo = ? AND issue_number = ?")
+    .get(repo, issueNumber) as Record<string, unknown> | undefined;
+  const status = row?.status;
+  if (typeof status !== "string") throw new Error("missing trigger status");
+  return status;
+}
+
 test("seeded sqlite store exposes the seeded jobs", () => {
   const store = freshStore();
   assert.equal(store.listJobs().length, seedJobs().length);
@@ -315,7 +324,7 @@ test("trigger ledger detects and records processed issues", () => {
   store.markProcessing("o/r", 5, "run-x", 0);
   assert.equal(store.isProcessed("o/r", 5), true);
   assert.equal(store.isProcessed("o/r", 6), false);
-  store.setStatus("o/r", 5, "done");
+  store.setStatus("o/r", 5, "run-x", "done");
   assert.equal(store.isProcessed("o/r", 5), true);
 });
 
@@ -327,6 +336,30 @@ test("trigger ledger tracks the last processed comment id and advances on re-run
   assert.equal(store.lastProcessedComment("o/r", 7), 0);
   store.markProcessing("o/r", 7, "run-b", 42);           // re-run claims a newer comment
   assert.equal(store.lastProcessedComment("o/r", 7), 42);
+});
+
+test("trigger ledger claim succeeds only for a new issue or newer comment watermark", () => {
+  const db = openDatabase(":memory:");
+  const store = new SqliteJobStore(db);
+  assert.equal(store.claimProcessing("o/r", 8, "run-a", 0), true);
+  assert.equal(store.claimProcessing("o/r", 8, "run-b", 0), false);
+  assert.equal(store.lastProcessedComment("o/r", 8), 0);
+  assert.equal(store.claimProcessing("o/r", 8, "run-c", 5), true);
+  assert.equal(store.lastProcessedComment("o/r", 8), 5);
+  assert.equal(store.claimProcessing("o/r", 8, "run-d", 5), false);
+});
+
+test("trigger ledger status updates only the currently claimed run", () => {
+  const db = openDatabase(":memory:");
+  const store = new SqliteJobStore(db);
+  assert.equal(store.claimProcessing("o/r", 9, "run-a", 0), true);
+  store.setStatus("o/r", 9, "run-a", "running");
+  assert.equal(triggerStatus(db, "o/r", 9), "running");
+  assert.equal(store.claimProcessing("o/r", 9, "run-b", 5), true);
+  store.setStatus("o/r", 9, "run-a", "failed");
+  assert.equal(triggerStatus(db, "o/r", 9), "processing");
+  store.setStatus("o/r", 9, "run-b", "succeeded");
+  assert.equal(triggerStatus(db, "o/r", 9), "succeeded");
 });
 
 test("markProcessing rejects a negative comment id", () => {

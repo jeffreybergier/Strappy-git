@@ -1,79 +1,110 @@
 # Strappy
 
-A Node.js + TypeScript web server that watches a whitelist of GitHub repos for
-new issues and pull requests, then runs **ISO 9001-inspired job process maps**
-(steps with explicit, typed inputs and outputs) backed by an LLM.
+A Node.js + TypeScript web server that watches GitHub issues from a
+whitelisted set of users, runs an explicit typed job process, and records each
+run in SQLite for auditability.
 
-LLM access goes through **[pi.dev](https://pi.dev)** (the `@earendil-works/pi-*`
-packages) talking to **[OpenRouter](https://openrouter.ai)**, so you can run
-open-source models (Llama, Qwen, DeepSeek, …) behind one API.
+LLM access goes through [pi.dev](https://pi.dev) using the
+`@earendil-works/pi-*` packages as a library, pointed at
+[OpenRouter](https://openrouter.ai) through an OpenAI-compatible provider
+configured in `config/models.json`.
 
-> Status: scaffold. This step sets up dependencies, the web server, and a basic
-> jobs dashboard. The GitHub poller and the job scheduler come next.
+## Status
+
+This repo is beyond the initial scaffold:
+
+- Express dashboard and JSON API are implemented.
+- SQLite persistence stores jobs, process steps, IO contracts, runs, step IO
+  values, LLM executions, transcripts, and trigger ledger state.
+- The GitHub issue poller is implemented. It auto-discovers repos the token can
+  push to, gates triggers by a user whitelist, and runs jobs sequentially.
+- The scheduler is implemented. It executes steps in order, threads typed
+  outputs into later inputs, records in-progress and final run state, and skips
+  remaining steps after a failure.
+- The real `process-issue` job is defined: fetch issue, security scan, comment
+  the verdict, clone, branch, implement with an LLM, commit/push, open a PR,
+  review with a second LLM, comment on the PR, and close the issue.
 
 ## Prerequisites
 
-- Node.js >= 20
-- An OpenRouter API key — https://openrouter.ai/keys
+- Node.js >= 22.19.0 (`node:sqlite` and the pi.dev packages require Node 22)
+- npm
+- A GitHub token with repo access for the bot account
+- An OpenRouter API key for LLM-backed steps
 
 ## Setup
 
 ```bash
 npm install
 cp .env.example .env
-# then edit .env and paste your OPENROUTER_API_KEY
 ```
+
+Then edit `.env`:
+
+- `GITHUB_TOKEN` enables the poller and GitHub mutations.
+- `STRAPPY_USER_WHITELIST` is comma-separated and fail-closed when empty.
+- `OPENROUTER_API_KEY` is required when an LLM step runs.
+- `OPENROUTER_MODEL` and `OPENROUTER_REVIEW_MODEL` must be declared in
+  `config/models.json`.
 
 ## Run
 
 ```bash
-npm run dev      # hot-reloading dev server (tsx)
+npm run dev
 # or
 npm run build && npm start
 ```
 
-Open http://localhost:3000 for the dashboard. JSON endpoints:
+Open `http://localhost:3000` for the dashboard.
 
-- `GET /api/jobs` — all jobs
-- `GET /api/jobs/:id` — one job
-- `GET /api/runs` — recent runs
+JSON endpoints:
 
-## How OpenRouter is wired
+- `GET /api/jobs` - all process definitions
+- `GET /api/jobs/:id` - one process definition
+- `GET /api/runs` - recorded runs
 
-`config/models.json` declares an `openrouter` provider (an OpenAI-compatible
-endpoint) and the open-source models you want to expose. Pi loads this file via
-`ModelRegistry.create(authStorage, "config/models.json")` and resolves the API
-key from the `OPENROUTER_API_KEY` environment variable.
+## Test
 
-To use a different model, either change `OPENROUTER_MODEL` in `.env` or add a new
-entry to `config/models.json` (any [OpenRouter model id](https://openrouter.ai/models)).
-
-The integration lives in `src/llm/pi.ts` — `runPrompt(text)` is the single seam
-the future scheduler will call from LLM-backed steps.
-
-## Project layout
-
-```
-config/models.json     OpenRouter provider + model declarations (pi.dev format)
-src/
-  config.ts            strict env loading (throws on missing/invalid)
-  logger.ts            namespaced logger -> [Scope.method]
-  server.ts            Express bootstrap
-  jobs/
-    types.ts           ISO 9001 process-map types (Job, ProcessStep, StepIO, JobRun)
-    seed.ts            sample jobs + runs
-    store.ts           in-memory JobStore
-  routes/
-    dashboard.ts       GET /  (server-rendered EJS)
-    api.ts             GET /api/*  (JSON)
-  llm/
-    pi.ts              pi.dev + OpenRouter integration (runPrompt)
-views/dashboard.ejs    Bootstrap 3 dashboard
+```bash
+npm run typecheck
+npm test
 ```
 
-## The process-map idea
+## Docker Compose
 
-Each `Job` is a process composed of ordered `ProcessStep`s. Every step declares
-typed `inputs` and `outputs`, so one step's output contract feeds the next step's
-input — the foundation for a traceable, ISO 9001-style scheduler. See the two
-seeded jobs (`Triage New Issue`, `Review Pull Request`) on the dashboard.
+From the repo root on the host:
+
+```bash
+docker compose up serve
+docker compose run --rm test
+docker compose run --rm shell "npm test"
+```
+
+The `serve` service builds once and runs `dist/server.js` on port 3000.
+
+## Project Layout
+
+```text
+config/models.json       OpenRouter provider and model declarations
+compose.yml              local container services
+prompts/                 system prompts used by LLM-backed steps
+src/config.ts            strict env loading
+src/logger.ts            namespaced logger
+src/server.ts            Express bootstrap and poller startup
+src/github/              Octokit wrapper, git helpers, issue poller
+src/jobs/                process types, scheduler, stores, SQLite, step kinds
+src/llm/                 pi.dev/OpenRouter integration and submit schemas
+src/routes/              dashboard and JSON API routes
+views/dashboard.ejs      Bootstrap dashboard
+```
+
+## Process Model
+
+A `Job` is an ordered process map. Each `ProcessStep` declares typed inputs and
+outputs (`StepIO[]`). The scheduler resolves inputs from trigger constants,
+static prompt content, or the previous step's outputs. Values that must cross
+multiple steps are explicitly carried as `pass` IO.
+
+Every run records a `JobRun` with per-step status, timing, resolved IO values,
+and LLM execution metadata when present. The dashboard renders both the static
+process map and live run state from SQLite.

@@ -433,21 +433,52 @@ export function lastProcessedComment(db: DatabaseSync, repo: string, issueNumber
   return value;
 }
 
-// Claim a (re-)run: INSERT OR REPLACE so a re-trigger updates the same row with
-// the new run id and the comment id that triggered it (0 for a new-issue run).
+// Atomic claim used by the poller: insert a new issue row, or advance an existing
+// row only when this run was triggered by a strictly newer whitelisted comment.
+// A duplicate in-flight tick/process sees 0 changed rows and must not enqueue.
+export function claimTriggerProcessing(db: DatabaseSync, repo: string, issueNumber: number, runId: string, lastCommentId: number): boolean {
+  validateTriggerProcessing(repo, issueNumber, runId, lastCommentId);
+  const result = db.prepare(
+    `INSERT INTO processed_triggers (repo, issue_number, run_id, status, processed_at, last_comment_id)
+     VALUES (?, ?, ?, 'processing', ?, ?)
+     ON CONFLICT(repo, issue_number) DO UPDATE SET
+       run_id = excluded.run_id,
+       status = excluded.status,
+       processed_at = excluded.processed_at,
+       last_comment_id = excluded.last_comment_id
+     WHERE excluded.last_comment_id > processed_triggers.last_comment_id`,
+  ).run(repo, issueNumber, runId, new Date().toISOString(), lastCommentId);
+  return Number(result.changes) > 0;
+}
+
+// Force a (re-)run ledger mark. Tests and administrative code use this direct
+// write; the poller uses claimTriggerProcessing so concurrent checks cannot
+// enqueue the same trigger twice.
 export function markTriggerProcessing(db: DatabaseSync, repo: string, issueNumber: number, runId: string, lastCommentId: number): void {
-  if (typeof repo !== "string" || repo === "") throw new Error("[Db.markTriggerProcessing] repo must be a non-empty string");
-  if (!Number.isInteger(issueNumber)) throw new Error("[Db.markTriggerProcessing] issueNumber must be an integer");
-  if (typeof runId !== "string" || runId === "") throw new Error("[Db.markTriggerProcessing] runId must be a non-empty string");
-  if (!Number.isInteger(lastCommentId) || lastCommentId < 0) throw new Error("[Db.markTriggerProcessing] lastCommentId must be a non-negative integer");
+  validateTriggerProcessing(repo, issueNumber, runId, lastCommentId);
   db.prepare(
     "INSERT OR REPLACE INTO processed_triggers (repo, issue_number, run_id, status, processed_at, last_comment_id) VALUES (?, ?, ?, 'processing', ?, ?)",
   ).run(repo, issueNumber, runId, new Date().toISOString(), lastCommentId);
 }
 
-export function setTriggerStatus(db: DatabaseSync, repo: string, issueNumber: number, status: string): void {
+function validateTriggerProcessing(repo: string, issueNumber: number, runId: string, lastCommentId: number): void {
+  if (typeof repo !== "string" || repo === "") throw new Error("[Db.markTriggerProcessing] repo must be a non-empty string");
+  if (!Number.isInteger(issueNumber)) throw new Error("[Db.markTriggerProcessing] issueNumber must be an integer");
+  if (typeof runId !== "string" || runId === "") throw new Error("[Db.markTriggerProcessing] runId must be a non-empty string");
+  if (!Number.isInteger(lastCommentId) || lastCommentId < 0) throw new Error("[Db.markTriggerProcessing] lastCommentId must be a non-negative integer");
+}
+
+export function setTriggerStatus(db: DatabaseSync, repo: string, issueNumber: number, runId: string, status: string): void {
+  if (typeof repo !== "string" || repo === "") throw new Error("[Db.setTriggerStatus] repo must be a non-empty string");
+  if (!Number.isInteger(issueNumber)) throw new Error("[Db.setTriggerStatus] issueNumber must be an integer");
+  if (typeof runId !== "string" || runId === "") throw new Error("[Db.setTriggerStatus] runId must be a non-empty string");
   if (typeof status !== "string" || status === "") throw new Error("[Db.setTriggerStatus] status must be a non-empty string");
-  db.prepare("UPDATE processed_triggers SET status = ? WHERE repo = ? AND issue_number = ?").run(status, repo, issueNumber);
+  db.prepare("UPDATE processed_triggers SET status = ? WHERE repo = ? AND issue_number = ? AND run_id = ?").run(
+    status,
+    repo,
+    issueNumber,
+    runId,
+  );
 }
 
 export function seedDatabase(db: DatabaseSync, jobs: Job[], runs: JobRun[]): void {
