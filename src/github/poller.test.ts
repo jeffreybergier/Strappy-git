@@ -4,7 +4,8 @@ import { IssuePoller, isAllowedAuthor, formatRunId, failureNote, failureComment,
 import type { GitHubClient, IssueComment, IssueRef } from "./client.js";
 import { openDatabase } from "../jobs/db.js";
 import { SqliteJobStore } from "../jobs/sqliteStore.js";
-import { defaultStepKinds, StepKindRegistry } from "../jobs/stepKinds.js";
+import { StepKindRegistry, stubExecutor } from "../jobs/stepKinds.js";
+import { llmDerivableKeys } from "../jobs/llmKind.js";
 import { processIssueJob } from "../jobs/processIssueJob.js";
 import { failureHandler } from "../jobs/failureHandler.js";
 import type { Job, JobRun } from "../jobs/types.js";
@@ -90,12 +91,25 @@ function setup(issuesByRepo: Record<string, IssueRef[]>, opts: { whitelist?: str
   const poller = new IssuePoller({
     client: fakeClient(issuesByRepo, comments, thread),
     store,
-    registry: opts.registry ?? defaultStepKinds(),
+    registry: opts.registry ?? stubRegistryForJob(job),
     job,
     whitelist: opts.whitelist ?? ["jeffreybergier"],
     intervalMs: 1000,
   });
   return { store, poller, comments, thread };
+}
+
+// Stub registry that backs the real processIssueJob in tests: every kind it uses,
+// run as a stub, with the llm kinds declaring their derivers so the poller's
+// strict-init validateJobRegistry check passes (production wires githubStepKinds,
+// which declares the same derivers).
+function stubRegistryForJob(job: Job): StepKindRegistry {
+  const registry = new StepKindRegistry();
+  for (const kind of new Set(job.steps.map((s) => s.kind))) {
+    const caps = kind === "llm" || kind === "llm.review" ? { derivableKeys: llmDerivableKeys() } : undefined;
+    registry.register(kind, stubExecutor, caps);
+  }
+  return registry;
 }
 
 // A one-step job whose only step throws, so the poller's failure path runs

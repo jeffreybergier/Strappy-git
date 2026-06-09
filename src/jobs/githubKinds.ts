@@ -1,7 +1,7 @@
 import path from "node:path";
 import { StepKindRegistry } from "./stepKinds.js";
 import type { StepContext, StepValues } from "./stepKinds.js";
-import { llmStepKind } from "./llmKind.js";
+import { llmStepKind, llmDerivableKeys } from "./llmKind.js";
 import { securityStepKind } from "./securityKind.js";
 import type { GitHubClient, IssueComment } from "../github/client.js";
 import * as git from "../github/git.js";
@@ -45,8 +45,8 @@ export function githubStepKinds(deps: GitHubKindDeps): StepKindRegistry {
     .register("github.commentSecurity", (ctx) => commentSecurity(deps, ctx))
     .register("git.cloneRepo", (ctx) => cloneRepo(deps, ctx))
     .register("git.createBranch", (ctx) => createBranch(ctx))
-    .register("llm", llmStepKind())
-    .register("llm.review", llmStepKind(undefined, deps.reviewModel))
+    .register("llm", llmStepKind(), { derivableKeys: llmDerivableKeys() })
+    .register("llm.review", llmStepKind(undefined, deps.reviewModel), { derivableKeys: llmDerivableKeys() })
     .register("git.commitPush", (ctx) => commitPush(deps, ctx))
     .register("github.openPullRequest", (ctx) => openPullRequest(deps, ctx))
     .register("github.commentPr", (ctx) => commentPullRequest(deps, ctx))

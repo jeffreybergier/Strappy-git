@@ -4,6 +4,7 @@ import { queuedRun, runJob } from "../jobs/scheduler.js";
 import { SequentialQueue } from "../jobs/queue.js";
 import { StepKindRegistry } from "../jobs/stepKinds.js";
 import type { StepValues } from "../jobs/stepKinds.js";
+import { validateJobRegistry } from "../jobs/validateJobRegistry.js";
 import { promptCheckComment } from "../jobs/githubKinds.js";
 import type { JobWriteStore, TriggerLedger } from "../jobs/store.js";
 import type { Job, JobRun, StepRun } from "../jobs/types.js";
@@ -174,6 +175,7 @@ export class IssuePoller {
     this.whitelist = deps.whitelist;
     this.intervalMs = deps.intervalMs;
     this.cleanup = deps.cleanup;
+    validateJobRegistry(this.job, this.registry); // strict init: this registry must be able to run the job's contract
     this.queue = new SequentialQueue((item) => this.runItem(item));
   }
 

@@ -26,6 +26,13 @@ const DERIVED_OUTPUTS: Record<string, (execution: LlmExecution) => unknown> = {
   outputTokens: (execution) => execution.usage.outputTokens,
 };
 
+// The "derived" output keys llmStepKind fills from the recorded execution — the
+// keys of DERIVED_OUTPUTS, exported so the registry declares the kind's
+// capability without duplicating the list (single source of truth for derivers).
+export function llmDerivableKeys(): string[] {
+  return Object.keys(DERIVED_OUTPUTS);
+}
+
 // LLM-backed step kind: prompts the model with the step's "userPrompt" input
 // under its "systemPrompt", runs it against the checked-out repo (the
 // "workingDirectory" input) with the built-in + submit tools, asks it to return

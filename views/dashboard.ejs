@@ -29,10 +29,12 @@
       .io-details { margin-bottom: 6px; }
       .io-toggle { list-style: none; cursor: pointer; outline: none; user-select: none; }
       .io-toggle::-webkit-details-marker { display: none; }
-      .io-toggle .caret::before { content: "\25B8"; color: #bbb; font-size: 10px; margin-right: 2px; }
-      details[open] > .io-toggle .caret::before { content: "\25BE"; }
+      .io-caret { display: inline-block; color: #bbb; font-size: 10px; margin-right: 4px; transition: transform .15s ease; }
+      .io-caret::before { content: "\25B8"; }
+      details[open] > .io-toggle .io-caret { transform: rotate(90deg); }
       .io-count { color: #bbb; }
       .io-cat { font-size: 9px; text-transform: uppercase; letter-spacing: .5px; color: #b0b0b0; margin-top: 4px; }
+      .io-cat-derived { color: #6f5499; }
       .io-cat-relayed { color: #a94442; }
       .step-failure { margin-top: 8px; padding-top: 6px; border-top: 1px dashed #e4b9b9; font-size: 11px; color: #a94442; line-height: 1.5; }
       .step-failure .failure-arrow { margin-right: 3px; }
@@ -117,10 +119,10 @@
                   <div class="panel-body">
                     <p class="small"><%= step.description %></p>
                     <details class="io-details">
-                      <summary class="io-label io-toggle"><span class="caret"></span>Inputs <span class="io-count">(<%= step.inputs.length %>)</span></summary>
+                      <summary class="io-label io-toggle"><span class="io-caret"></span>Inputs <span class="io-count">(<%= step.inputs.length %>)</span></summary>
                       <ul class="io-list">
                         <% step.inputs.forEach(function (io) { %>
-                          <li><%= io.key %> <span class="io-type">:<%= io.type %></span><% if (io.source && io.source !== "step") { %> <span class="io-src io-src-<%= io.source %>"<% if (io.source === "static" && step.systemPrompt) { %> title="<%= step.systemPrompt %>"<% } %>><%= io.source %></span><% } %></li>
+                          <li><%= io.key %> <span class="io-type">:<%= io.type %></span><% if (io.source && io.source !== "step" && io.source !== "pass") { %> <span class="io-src io-src-<%= io.source %>"<% if (io.source === "static" && step.systemPrompt) { %> title="<%= step.systemPrompt %>"<% } %>><%= io.source %></span><% } %></li>
                         <% }); %>
                       </ul>
                     </details>
@@ -129,7 +131,7 @@
                       <div class="io-cat io-cat-<%= group.key %>"><%= group.label %></div>
                       <ul class="io-list">
                         <% group.items.forEach(function (io) { %>
-                          <li><%= io.key %> <span class="io-type">:<%= io.type %></span><% if (io.source && io.source !== "step") { %> <span class="io-src io-src-<%= io.source %>"><%= io.source %></span><% } %><% if (io.guidance) { %> <span class="io-src io-src-guided" title="<%= io.guidance %>">guided</span><% } %></li>
+                          <li><%= io.key %> <span class="io-type">:<%= io.type %></span><% if (io.guidance) { %> <span class="io-src io-src-guided" title="<%= io.guidance %>">guided</span><% } %></li>
                         <% }); %>
                       </ul>
                     <% }); %>
