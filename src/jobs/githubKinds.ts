@@ -11,9 +11,11 @@ export interface GitHubKindDeps {
   token: string;
   tempDir: string;
   committer: { name: string; email: string };
-  // Model id for the code-review step (config.openRouter.reviewModel). Kept on
-  // deps so the kind stays a pure function of its inputs — no global lookup.
+  // Model ids for the code-review step (config.openRouter.reviewModel) and the
+  // security.scan gate (config.openRouter.securityModel). Kept on deps so the
+  // kinds stay pure functions of their inputs — no global lookup.
   reviewModel: string;
+  securityModel: string;
 }
 
 // Live registry for processIssueJob: the same kind keys defaultStepKinds() stubs,
@@ -40,7 +42,7 @@ export function githubStepKinds(deps: GitHubKindDeps): StepKindRegistry {
   return new StepKindRegistry()
     .register("github.fetchIssue", (ctx) => fetchIssue(deps, ctx))
     .register("github.fetchPullRequest", (ctx) => fetchPullRequest(deps, ctx))
-    .register("security.scan", securityStepKind())
+    .register("security.scan", securityStepKind(undefined, deps.securityModel), { derivableKeys: llmDerivableKeys() })
     .register("github.commentSecurity", (ctx) => commentSecurity(deps, ctx))
     .register("git.cloneRepo", (ctx) => cloneRepo(deps, ctx))
     .register("git.createBranch", (ctx) => createBranch(ctx))
@@ -187,15 +189,17 @@ export function updateBody(summary: string, usage: PrUsage): string {
 // (our static-heading convention — bold, not a `#` heading), a horizontal rule,
 // then the guard model's own voiced reason as pure markdown (it renders — no code
 // fence or blockquote around it). Shared by both outcomes: the safe path posts it
-// from the comment step (passed = true); the unsafe path posts it from the poller
-// (passed = false), since the security step throws to fail closed.
-export function promptCheckComment(passed: boolean, reason: string): string {
+// from the comment step (passed = true, with the guard model's spend footer); the
+// unsafe path posts it from the poller (passed = false, no usage — the throw
+// carries only the reason), since the security step throws to fail closed.
+export function promptCheckComment(passed: boolean, reason: string, usage?: PrUsage): string {
   if (typeof passed !== "boolean") throw new Error("[githubKinds.promptCheckComment] passed must be a boolean");
   if (typeof reason !== "string" || reason.trim() === "") {
     throw new Error("[githubKinds.promptCheckComment] reason is required");
   }
   const heading = passed ? "✅ Prompt Check Passed" : "🚫 Prompt Check Failed";
-  return `**${heading}**\n\n---\n\n${reason.trim()}`;
+  const body = `**${heading}**\n\n---\n\n${reason.trim()}`;
+  return usage === undefined ? body : `${body}\n\n${usageFooter(usage)}`;
 }
 
 function usageFooter(usage: PrUsage): string {
@@ -236,7 +240,12 @@ async function commentSecurity(deps: GitHubKindDeps, ctx: StepContext): Promise<
   const commentId = await deps.client.commentOnIssue(
     str(ctx.inputs, "repo"),
     targetNumber(ctx.inputs),
-    promptCheckComment(true, str(ctx.inputs, "securityReason")),
+    promptCheckComment(true, str(ctx.inputs, "securityReason"), {
+      model: str(ctx.inputs, "model"),
+      cost: num(ctx.inputs, "cost"),
+      inputTokens: num(ctx.inputs, "inputTokens"),
+      outputTokens: num(ctx.inputs, "outputTokens"),
+    }),
   );
   return { commentId };
 }
@@ -285,4 +294,5 @@ function validateDeps(deps: GitHubKindDeps): void {
   if (typeof deps.tempDir !== "string" || deps.tempDir === "") throw new Error("[githubKinds] tempDir is required");
   if (!deps.committer) throw new Error("[githubKinds] committer is required");
   if (typeof deps.reviewModel !== "string" || deps.reviewModel === "") throw new Error("[githubKinds] reviewModel is required");
+  if (typeof deps.securityModel !== "string" || deps.securityModel === "") throw new Error("[githubKinds] securityModel is required");
 }

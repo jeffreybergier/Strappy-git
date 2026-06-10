@@ -66,6 +66,7 @@ function startPoller(store: SqliteJobStore): void {
     tempDir: config.github.tempDir,
     committer: { name: config.github.committerName, email: config.github.committerEmail },
     reviewModel: config.openRouter.reviewModel,
+    securityModel: config.openRouter.securityModel,
   };
   new TriggerPoller({
     client,

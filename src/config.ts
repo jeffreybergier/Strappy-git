@@ -30,6 +30,8 @@ export const config = {
     // The code-review step runs against this model; defaults to the main model
     // so a single-model setup still works. Must be declared in config/models.json.
     reviewModel: process.env.OPENROUTER_REVIEW_MODEL ?? defaultModel,
+    // The security.scan gate runs against this model; same single-model fallback.
+    securityModel: process.env.OPENROUTER_SECURITY_MODEL ?? defaultModel,
     apiKeyEnv: "OPENROUTER_API_KEY",
   },
   github: {

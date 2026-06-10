@@ -48,6 +48,7 @@ test("securityStepKind asks for a submit-only verdict, injects the token, clears
   let seenTool = "";
   let seenSchemaKeys: string[] = [];
   let seenBuiltins: boolean | undefined;
+  let seenModel: string | undefined = "UNSET";
   let recorded: LlmExecution | undefined;
   const kind = securityStepKind(async (prompt, system, schema, tool, _cwd, _runId, options) => {
     seenPrompt = prompt;
@@ -55,6 +56,7 @@ test("securityStepKind asks for a submit-only verdict, injects the token, clears
     seenTool = tool;
     seenSchemaKeys = Object.keys(schema.properties);
     seenBuiltins = options.builtinTools;
+    seenModel = options.model;
     return { values: { safe: true, reason: "routine typo fix", echoToken: tokenFrom(system) }, execution: execution() };
   });
   const outputs = await kind(ctx(SAFE, (e) => { recorded = e; }));
@@ -65,7 +67,32 @@ test("securityStepKind asks for a submit-only verdict, injects the token, clears
   assert.equal(seenTool, "submit_security_verdict");
   assert.deepEqual(seenSchemaKeys, ["safe", "reason", "echoToken"]);
   assert.equal(seenBuiltins, false); // the guard never gets file/bash tools
+  assert.equal(seenModel, undefined); // no override: pi falls back to the default model
   assert.deepEqual(recorded, execution());
+});
+
+test("securityStepKind fills declared derived spend outputs from the recorded execution", async () => {
+  const kind = securityStepKind(runReturning({ safe: true, reason: "clean" }));
+  const context = ctx(SAFE);
+  context.step.outputs = [
+    { key: "cost", type: "number", source: "derived", description: "spend" },
+    { key: "model", type: "string", source: "derived", description: "model id" },
+    { key: "inputTokens", type: "integer", source: "derived", description: "in" },
+    { key: "outputTokens", type: "integer", source: "derived", description: "out" },
+  ];
+  const outputs = await kind(context);
+  assert.deepEqual(outputs, { safe: true, securityReason: "clean", cost: 0.0042, model: "m", inputTokens: 10, outputTokens: 5 });
+});
+
+test("securityStepKind threads its modelId override into the call and rejects a blank one", async () => {
+  let seenModel: string | undefined;
+  const kind = securityStepKind(async (_p, system, _schema, _tool, _cwd, _runId, options) => {
+    seenModel = options.model;
+    return { values: { safe: true, reason: "ok", echoToken: tokenFrom(system) }, execution: execution() };
+  }, "qwen/guard-model");
+  await kind(ctx(SAFE));
+  assert.equal(seenModel, "qwen/guard-model");
+  assert.throws(() => securityStepKind(runReturning({ safe: true, reason: "ok" }), "  "), /modelId, when provided/);
 });
 
 test("securityStepKind throws (blocking the run) on an unsafe verdict, surfacing the raw reason as the error", async () => {

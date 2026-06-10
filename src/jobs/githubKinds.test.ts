@@ -118,6 +118,14 @@ test("promptCheckComment renders a bold 🚫 Failed heading for a rejection", ()
   assert.match(promptCheckComment(false, "Hard pass — **prompt injection**."), /^\*\*🚫 Prompt Check Failed\*\*\n\n---\n\nHard pass/);
 });
 
+test("promptCheckComment appends the guard model's spend footer when usage is given", () => {
+  const out = promptCheckComment(true, "Looks clean.", usage);
+  assert.equal(out, [
+    "**✅ Prompt Check Passed**\n\n---\n\nLooks clean.",
+    `---\n🤖 Strappy · ${usage.model}\nLLM cost: $0.0234 · 12,304 in / 1,872 out tokens`,
+  ].join("\n\n"));
+});
+
 test("promptCheckComment trims the reason and rejects bad args", () => {
   assert.match(promptCheckComment(true, "  looks clean  "), /\n\nlooks clean$/);
   assert.throws(() => promptCheckComment(true, "   "), /reason is required/);

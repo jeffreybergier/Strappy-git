@@ -56,8 +56,9 @@ test("a step whose kind is not registered is rejected", () => {
 test("the real processIssueJob validates against a registry that declares the llm derivers", () => {
   const j = processIssueJob();
   const reg = new StepKindRegistry();
+  const derives = new Set(["llm", "llm.review", "security.scan"]);
   for (const kind of new Set(j.steps.map((s) => s.kind))) {
-    const caps = kind === "llm" || kind === "llm.review" ? { derivableKeys: llmDerivableKeys() } : undefined;
+    const caps = derives.has(kind) ? { derivableKeys: llmDerivableKeys() } : undefined;
     reg.register(kind, stubExecutor, caps);
   }
   assert.doesNotThrow(() => validateJobRegistry(j, reg));
@@ -67,7 +68,8 @@ test("the real processIssueJob is rejected by a registry that omits the llm deri
   const j = processIssueJob();
   const reg = new StepKindRegistry();
   for (const kind of new Set(j.steps.map((s) => s.kind))) reg.register(kind, stubExecutor);
-  assert.throws(() => validateJobRegistry(j, reg), /has no deriver in kind "llm"/);
+  // The security scan is the first LLM-backed step, so the check trips there.
+  assert.throws(() => validateJobRegistry(j, reg), /has no deriver in kind "security.scan"/);
 });
 
 test("validateJobRegistry validates its arguments", () => {

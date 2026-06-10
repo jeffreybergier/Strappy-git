@@ -142,13 +142,14 @@ function setup(issuesByRepo: Record<string, IssueRef[]>, opts: SetupOpts = {}) {
 }
 
 // Stub registry that backs the real jobs in tests: every kind they use, run as a
-// stub, with the llm kinds declaring their derivers so the poller's strict-init
-// validateJobRegistry check passes (production wires githubStepKinds, which
-// declares the same derivers).
+// stub, with the llm-backed kinds declaring their derivers so the poller's
+// strict-init validateJobRegistry check passes (production wires githubStepKinds,
+// which declares the same derivers).
 function stubRegistryForJobs(jobs: Job[]): StepKindRegistry {
   const registry = new StepKindRegistry();
+  const derives = new Set(["llm", "llm.review", "security.scan"]);
   for (const kind of new Set(jobs.flatMap((job) => job.steps.map((s) => s.kind)))) {
-    const caps = kind === "llm" || kind === "llm.review" ? { derivableKeys: llmDerivableKeys() } : undefined;
+    const caps = derives.has(kind) ? { derivableKeys: llmDerivableKeys() } : undefined;
     registry.register(kind, stubExecutor, caps);
   }
   return registry;

@@ -77,7 +77,8 @@ function modelOutputs(outputs: StepIO[]): StepIO[] {
 
 // Strict: a "derived" output whose key has no deriver is a contract error (the
 // step asked the harness for a fact it cannot produce), surfaced at run time.
-function derivedOutputs(outputs: StepIO[], execution: LlmExecution): StepValues {
+// Exported so securityStepKind fills its derived spend outputs the same way.
+export function derivedOutputs(outputs: StepIO[], execution: LlmExecution): StepValues {
   const values: StepValues = {};
   for (const io of outputs) {
     if (io.source !== "derived") continue;

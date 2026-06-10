@@ -3,6 +3,7 @@ import { executionFromStructuredError, runStructured } from "../llm/pi.js";
 import type { StructuredResult } from "../llm/pi.js";
 import { outputsToSchema } from "../llm/schema.js";
 import { createLogger } from "../logger.js";
+import { derivedOutputs } from "./llmKind.js";
 import { loadGuidanceKey } from "./prompts.js";
 import { transcriptId } from "./stepKinds.js";
 import type { StepContext, StepExecutor, StepValues } from "./stepKinds.js";
@@ -17,7 +18,7 @@ type RunStructured = (
   toolName: string,
   cwd: string,
   runId: string | undefined,
-  options: { builtinTools: boolean },
+  options: { builtinTools: boolean; model?: string },
 ) => Promise<StructuredResult>;
 
 const VERDICT_TOOL = "submit_security_verdict";
@@ -59,15 +60,19 @@ const VERDICT_SCHEMA: StepIO[] = [
 // the model's validated tool call. An unsafe verdict (or a model that won't call
 // the tool) throws, failing the run and skipping every later step, so the poller
 // posts the reason back on the issue. Fails closed. runStructured is injected so
-// the kind is unit-testable without a live API.
-export function securityStepKind(run: RunStructured = runStructured): StepExecutor {
+// the kind is unit-testable without a live API. modelId, when given, overrides
+// the default model (the live registry binds it to config.openRouter.securityModel).
+export function securityStepKind(run: RunStructured = runStructured, modelId?: string): StepExecutor {
   if (typeof run !== "function") throw new Error("[securityStepKind] run must be a function");
+  if (modelId !== undefined && (typeof modelId !== "string" || modelId.trim() === "")) {
+    throw new Error("[securityStepKind] modelId, when provided, must be a non-empty string");
+  }
   return async (ctx) => {
     const userPrompt = readInput(ctx, "userPrompt");
     const systemPrompt = readInput(ctx, "systemPrompt");
     const token = mintToken();
     // No built-in tools, so cwd binds nothing — it only anchors the transcript.
-    const { values, execution } = await runSecurity(ctx, run, userPrompt, systemPrompt, token);
+    const { values, execution } = await runSecurity(ctx, run, userPrompt, systemPrompt, token, modelId);
     ctx.recordExecution?.(execution);
     verifyToken(values, token); // integrity before content: a forged call is rejected outright
     const verdict = readVerdict(values);
@@ -75,15 +80,17 @@ export function securityStepKind(run: RunStructured = runStructured): StepExecut
     // it verbatim as the "Prompt Check Failed" comment, so it must stay clean.
     if (!verdict.safe) throw new Error(verdict.reason);
     log.info("scan", `issue cleared the security screen: ${verdict.reason}`);
-    return { safe: true, securityReason: verdict.reason } as StepValues;
+    // Derived spend outputs (cost/model/tokens) fill from the execution exactly
+    // as in llmStepKind, feeding the verdict comment's usage footer.
+    return { safe: true, securityReason: verdict.reason, ...derivedOutputs(ctx.step.outputs, execution) } as StepValues;
   };
 }
 
-async function runSecurity(ctx: StepContext, run: RunStructured, userPrompt: string, systemPrompt: string, token: string): Promise<StructuredResult> {
+async function runSecurity(ctx: StepContext, run: RunStructured, userPrompt: string, systemPrompt: string, token: string, modelId?: string): Promise<StructuredResult> {
   try {
     return await run(
       scanRequest(userPrompt), withToken(systemPrompt, token), outputsToSchema(VERDICT_SCHEMA),
-      VERDICT_TOOL, process.cwd(), transcriptId(ctx), { builtinTools: false },
+      VERDICT_TOOL, process.cwd(), transcriptId(ctx), { builtinTools: false, model: modelId },
     );
   } catch (error) {
     const execution = executionFromStructuredError(error);
