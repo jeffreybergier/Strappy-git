@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { IssuePoller, isAllowedAuthor, formatRunId, failureNote, failureComment, attemptedSummary, failureOutputKeys } from "./poller.js";
+import { IssuePoller, isAllowedAuthor, isPushProtected, formatRunId, failureNote, failureComment, attemptedSummary, failureOutputKeys } from "./poller.js";
 import type { GitHubClient, IssueComment, IssueRef } from "./client.js";
 import { openDatabase } from "../jobs/db.js";
 import { SqliteJobStore } from "../jobs/sqliteStore.js";
@@ -81,21 +81,31 @@ function fakeClient(issuesByRepo: Record<string, IssueRef[]>, posted: CapturedCo
     getIssue: async () => { throw new Error("getIssue not used in stub run"); },
     listComments: async (repo, issueNumber) => thread[`${repo}#${issueNumber}`] ?? [],
     getDefaultBranch: async () => "main",
+    listBranchRules: async () => ["pull_request", "non_fast_forward", "deletion"],
     openPullRequest: async () => ({ number: 1, url: "x" }),
     commentOnIssue: async (repo, issueNumber, body) => { posted.push({ repo, issueNumber, body }); return posted.length; },
     closeIssue: async () => {},
   };
 }
 
-function setup(issuesByRepo: Record<string, IssueRef[]>, opts: { whitelist?: string[]; job?: Job; registry?: StepKindRegistry; thread?: Thread } = {}) {
+interface SetupOpts {
+  whitelist?: string[];
+  job?: Job;
+  registry?: StepKindRegistry;
+  thread?: Thread;
+  listBranchRules?: GitHubClient["listBranchRules"];
+}
+
+function setup(issuesByRepo: Record<string, IssueRef[]>, opts: SetupOpts = {}) {
   const db = openDatabase(":memory:");
   const store = new SqliteJobStore(db);
   const job = opts.job ?? processIssueJob();
   store.saveJob(job);
   const comments: CapturedComment[] = [];
   const thread = opts.thread ?? {};
+  const client = { ...fakeClient(issuesByRepo, comments, thread), ...(opts.listBranchRules && { listBranchRules: opts.listBranchRules }) };
   const poller = new IssuePoller({
-    client: fakeClient(issuesByRepo, comments, thread),
+    client,
     store,
     registry: opts.registry ?? stubRegistryForJob(job),
     job,
@@ -193,6 +203,7 @@ test("overlapping ticks join the in-flight scan instead of enqueueing twice", as
       return [];
     },
     getDefaultBranch: async () => "main",
+    listBranchRules: async () => ["pull_request"],
     openPullRequest: async () => ({ number: 1, url: "x" }),
     commentOnIssue: async () => 1,
     closeIssue: async () => {},
@@ -309,6 +320,41 @@ test("a non-whitelisted reply does not re-trigger, no matter who posts", async (
   await poller.tick();
   await poller.whenIdle();
   assert.equal(store.listRuns().length, 1, "an outsider's comment never raises the watermark");
+});
+
+// ---- branch-protection check (advisory: warn per tick, never block) ---------
+
+test("isPushProtected requires an active pull_request rule", () => {
+  assert.equal(isPushProtected(["pull_request", "non_fast_forward", "deletion"]), true);
+  assert.equal(isPushProtected(["non_fast_forward", "deletion"]), false);
+  assert.equal(isPushProtected([]), false);
+});
+
+test("isPushProtected throws on a non-array", () => {
+  assert.throws(() => isPushProtected(null as never), /ruleTypes must be an array/);
+});
+
+test("an unprotected repo is still polled — the check only warns", async () => {
+  const { store, poller } = setup(
+    { "o/r": [issue("o/r", 40, "jeffreybergier")] },
+    { listBranchRules: async () => [] },
+  );
+  await poller.tick();
+  await poller.whenIdle();
+  assert.equal(store.isProcessed("o/r", 40), true);
+  assert.equal(store.listRuns().length, 1);
+});
+
+test("an unverifiable protection check never blocks polling (e.g. plan-gated 403)", async () => {
+  const { store, poller } = setup(
+    { "o/r": [issue("o/r", 41, "jeffreybergier")] },
+    { listBranchRules: async () => { throw new Error("Upgrade to GitHub Pro or make this repository public to enable this feature."); } },
+  );
+  await poller.tick();
+  await poller.whenIdle();
+  assert.equal(store.isProcessed("o/r", 41), true);
+  assert.equal(store.listRuns().length, 1);
+  assert.equal(store.listRuns()[0]?.status, "succeeded");
 });
 
 // ---- failure reporting (post the error back to the issue, no LLM) -----------

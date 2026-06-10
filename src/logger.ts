@@ -11,7 +11,8 @@ export function createLogger(scope: string): Logger {
     throw new Error("[createLogger] scope must be a non-empty string");
   }
   const emit = (level: Level, method: string, message: string, rest: unknown[]): void => {
-    console[level](`[${scope}.${method}] ${message}`, ...rest);
+    const prefix = level === "warn" ? "[WARNING] " : "";
+    console[level](`${prefix}[${scope}.${method}] ${message}`, ...rest);
   };
   return {
     info: (method, message, ...rest) => emit("info", method, message, rest),

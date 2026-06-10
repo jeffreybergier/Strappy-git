@@ -13,3 +13,13 @@ test("createLogger returns info/warn/error functions", () => {
   assert.equal(typeof log.warn, "function");
   assert.equal(typeof log.error, "function");
 });
+
+test("warn leads with [WARNING] before the scope; info and error do not", (t) => {
+  const warn = t.mock.method(console, "warn", () => {});
+  const info = t.mock.method(console, "info", () => {});
+  const log = createLogger("Test");
+  log.warn("method", "be careful");
+  log.info("method", "all good");
+  assert.equal(warn.mock.calls[0]?.arguments[0], "[WARNING] [Test.method] be careful");
+  assert.equal(info.mock.calls[0]?.arguments[0], "[Test.method] all good");
+});

@@ -24,6 +24,14 @@ export function isAllowedAuthor(login: string, whitelist: readonly string[]): bo
   return whitelist.some((u) => u.trim().toLowerCase() === needle);
 }
 
+// Push-protection gate: a branch rejects direct pushes when an active ruleset
+// requires a pull request before merging. The other rule types (non_fast_forward,
+// deletion, …) do not block a plain push, so only "pull_request" counts.
+export function isPushProtected(ruleTypes: readonly string[]): boolean {
+  if (!Array.isArray(ruleTypes)) throw new Error("[Poller.isPushProtected] ruleTypes must be an array");
+  return ruleTypes.includes("pull_request");
+}
+
 // Informative run id: <repo>#<issue>/<process>/<first uuid segment>, e.g.
 // owner/name#42/process-issue/16498324 — readable in place of run-<full uuid>.
 export function formatRunId(repo: string, issueNumber: number, process: string, jobUuid: string): string {
@@ -226,12 +234,27 @@ export class IssuePoller {
   }
 
   private async pollRepo(repo: string): Promise<void> {
+    await this.warnIfUnprotected(repo);
     try {
       const issues = await this.client.listOpenIssues(repo);
       log.info("pollRepo", `${repo}: ${issues.length} open issue(s)`);
       for (const issue of issues) await this.maybeEnqueue(issue);
     } catch (error) {
       log.error("pollRepo", `failed for ${repo}`, error);
+    }
+  }
+
+  // Advisory check, never blocking: the repo is polled either way, but a
+  // default branch that accepts direct pushes (or can't be verified — e.g. a
+  // private repo on a plan without rulesets) gets exactly one warn line per
+  // tick. One line, no error dump: this fires every cycle until fixed.
+  private async warnIfUnprotected(repo: string): Promise<void> {
+    try {
+      const branch = await this.client.getDefaultBranch(repo);
+      if (isPushProtected(await this.client.listBranchRules(repo, branch))) return;
+      log.warn("pollRepo", `${repo}: main branch protection is OFF — ${branch} accepts direct pushes; add a ruleset requiring a pull request`);
+    } catch (error) {
+      log.warn("pollRepo", `${repo}: could not verify main branch protection (${message(error)})`);
     }
   }
 

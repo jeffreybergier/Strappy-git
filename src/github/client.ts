@@ -35,6 +35,7 @@ export interface GitHubClient {
   getIssue(repo: string, issueNumber: number): Promise<IssueRef>;
   listComments(repo: string, issueNumber: number): Promise<IssueComment[]>;
   getDefaultBranch(repo: string): Promise<string>;
+  listBranchRules(repo: string, branch: string): Promise<string[]>;
   openPullRequest(input: OpenPrInput): Promise<{ number: number; url: string }>;
   commentOnIssue(repo: string, issueNumber: number, body: string): Promise<number>;
   closeIssue(repo: string, issueNumber: number): Promise<void>;
@@ -61,6 +62,7 @@ export function createGitHubClient(token: string): GitHubClient {
     getIssue: (repo, n) => getIssue(octokit, repo, n),
     listComments: (repo, n) => listComments(octokit, repo, n),
     getDefaultBranch: (repo) => getDefaultBranch(octokit, repo),
+    listBranchRules: (repo, branch) => listBranchRules(octokit, repo, branch),
     openPullRequest: (input) => openPullRequest(octokit, input),
     commentOnIssue: (repo, n, body) => commentOnIssue(octokit, repo, n, body),
     closeIssue: (repo, n) => closeIssue(octokit, repo, n),
@@ -146,6 +148,17 @@ async function getDefaultBranch(octokit: Octokit, repo: string): Promise<string>
     log.error("getDefaultBranch", `failed for ${repo}`, error);
     throw error;
   }
+}
+
+// The active ruleset rule types in effect on a branch (e.g. "pull_request"),
+// merged across all Active rulesets that target it. Readable with plain read
+// access — unlike classic branch protection, which needs repo admin. No
+// logging here: the check is advisory, so the poller owns reporting (a 403 is
+// routine for a private repo on a free plan and must not dump an error).
+async function listBranchRules(octokit: Octokit, repo: string, branch: string): Promise<string[]> {
+  const { owner, name } = parseRepo(repo);
+  const res = await octokit.repos.getBranchRules({ owner, repo: name, branch, per_page: 100 });
+  return res.data.map((r) => r.type);
 }
 
 async function openPullRequest(octokit: Octokit, input: OpenPrInput): Promise<{ number: number; url: string }> {
