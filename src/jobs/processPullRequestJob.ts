@@ -1,8 +1,9 @@
-import type { Job, ProcessStep, StepIO } from "./types.js";
+import type { Job, ProcessStep, StepIO, TriggerSpec } from "./types.js";
 import type { IoSource, IoType } from "./io.js";
 import { loadPrompt } from "./prompts.js";
 import { failureHandler } from "./failureHandler.js";
 import { validateJobGraph } from "./validateJobGraph.js";
+import { validateWatchedTrigger } from "./trigger.js";
 import { REVIEW_GUIDANCE } from "./processIssueJob.js";
 
 function io(key: string, type: IoType, source: IoSource, description: string, guidance?: string, feedsFailure?: boolean): StepIO {
@@ -22,6 +23,28 @@ export function pullRequestTriggerInputs(): StepIO[] {
     io("baseBranch", "string", "trigger", "Base branch the pull request targets"),
     io("jobUuid", "string", "trigger", "Per-job UUID"),
   ];
+}
+
+// The full trigger contract: review once, when the PR opens. Strappy's own
+// strappy/... branches are excluded (the issue job already reviews the PRs it
+// opens); every later whitelisted comment belongs to the reply trigger, so the
+// two PR triggers partition the shared per-PR ledger row by activation.
+export function pullRequestTrigger(): TriggerSpec {
+  const spec: TriggerSpec = {
+    id: "github.pull_request.opened",
+    subject: "pull_request",
+    activation: "creation",
+    conditions: [
+      { kind: "once-per-trigger" },
+      { kind: "author-whitelisted", of: "item" },
+      { kind: "head-branch-in-same-repo" },
+      { kind: "head-branch-not-prefixed", prefix: "strappy/" },
+    ],
+    onFailure: "comment-and-retry",
+    inputs: pullRequestTriggerInputs(),
+  };
+  validateWatchedTrigger(spec);
+  return spec;
 }
 
 function step(
@@ -48,7 +71,7 @@ export function processPullRequestJob(): Job {
     id: "process-pull-request",
     name: "Process New Pull Request",
     description: "Review a whitelisted user's same-repo pull request with the LLM and post the verdict as a PR comment.",
-    trigger: "github.pull_request.opened",
+    trigger: pullRequestTrigger(),
     steps: [
       step("fetch-pr", "github.fetchPullRequest", "Fetch Pull Request",
         "Read the PR title, description, and comment thread and render the review user message.",
@@ -96,6 +119,6 @@ export function processPullRequestJob(): Job {
     failureHandler: failureHandler("prNumber"),
   };
   // Strict init: refuse to hand back a job whose step contract doesn't hold.
-  validateJobGraph(job, pullRequestTriggerInputs());
+  validateJobGraph(job, job.trigger.inputs);
   return job;
 }

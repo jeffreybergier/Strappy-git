@@ -1,15 +1,16 @@
-import type { Job, ProcessStep, StepIO } from "./types.js";
+import type { Job, ProcessStep, StepIO, TriggerSpec } from "./types.js";
 import type { IoSource, IoType } from "./io.js";
 import { loadGuidanceKey, loadPrompt } from "./prompts.js";
 import { failureHandler } from "./failureHandler.js";
 import { validateJobGraph } from "./validateJobGraph.js";
+import { validateWatchedTrigger } from "./trigger.js";
 
 function io(key: string, type: IoType, source: IoSource, description: string, guidance?: string, feedsFailure?: boolean): StepIO {
   return { key, type, source, description, ...(guidance !== undefined && { guidance }), ...(feedsFailure && { feedsFailure: true }) };
 }
 
 // The values the poller seeds onto the run for a github.pull_request.commented
-// trigger (see poller.pullRequestReplySource). The gate is the COMMENT author,
+// trigger (see pullRequestReplyTrigger below). The gate is the COMMENT author,
 // not the PR author: any same-repo PR (including Strappy's own strappy/...
 // branches) qualifies once a whitelisted user replies on it. prAuthor is seeded
 // for traceability and may be anyone with write access.
@@ -22,6 +23,28 @@ export function pullRequestCommentTriggerInputs(): StepIO[] {
     io("baseBranch", "string", "trigger", "Base branch the pull request targets"),
     io("jobUuid", "string", "trigger", "Per-job UUID"),
   ];
+}
+
+// The full trigger contract: comment-activated, so it owns every whitelisted
+// reply after the PR opened — on anyone's same-repo PR, Strappy's own strappy/...
+// branches included (fixing Strappy's own PR on request is its headline use).
+// The ledger watermark makes each comment fire at most once, and a failed run
+// leaves the thread open so a whitelisted reply retries.
+export function pullRequestReplyTrigger(): TriggerSpec {
+  const spec: TriggerSpec = {
+    id: "github.pull_request.commented",
+    subject: "pull_request",
+    activation: "comment",
+    conditions: [
+      { kind: "once-per-trigger" },
+      { kind: "author-whitelisted", of: "comment" },
+      { kind: "head-branch-in-same-repo" },
+    ],
+    onFailure: "comment-and-retry",
+    inputs: pullRequestCommentTriggerInputs(),
+  };
+  validateWatchedTrigger(spec);
+  return spec;
 }
 
 function step(
@@ -46,7 +69,7 @@ export function processPullRequestCommentJob(): Job {
     id: "process-pull-request-comment",
     name: "Process Pull Request Reply",
     description: "Implement a whitelisted user's PR feedback with the LLM: update the head branch, push, and reply with what changed.",
-    trigger: "github.pull_request.commented",
+    trigger: pullRequestReplyTrigger(),
     steps: [
       step("fetch-pr", "github.fetchPullRequest", "Fetch Pull Request",
         "Read the PR title, description, and comment thread (the feedback) and render the implementation user message.",
@@ -131,6 +154,6 @@ export function processPullRequestCommentJob(): Job {
     failureHandler: failureHandler("prNumber"),
   };
   // Strict init: refuse to hand back a job whose step contract doesn't hold.
-  validateJobGraph(job, pullRequestCommentTriggerInputs());
+  validateJobGraph(job, job.trigger.inputs);
   return job;
 }

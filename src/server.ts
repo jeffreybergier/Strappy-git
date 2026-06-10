@@ -12,7 +12,7 @@ import { apiRouter } from "./routes/api.js";
 import { createGitHubClient } from "./github/client.js";
 import { sessionsDir } from "./llm/pi.js";
 import { githubStepKinds, githubCleanup } from "./jobs/githubKinds.js";
-import { TriggerPoller, issueSource, pullRequestSource, pullRequestReplySource } from "./github/poller.js";
+import { TriggerPoller, watcherFor } from "./github/poller.js";
 import { processIssueJob } from "./jobs/processIssueJob.js";
 import { processPullRequestJob } from "./jobs/processPullRequestJob.js";
 import { processPullRequestCommentJob } from "./jobs/processPullRequestCommentJob.js";
@@ -72,14 +72,15 @@ function startPoller(store: SqliteJobStore): void {
     store,
     registry: githubStepKinds(deps),
     cleanup: githubCleanup(deps),
-    // Order matters for PRs sharing one ledger row: the review watcher claims a
-    // PR at creation first, so the reply watcher only ever fires on later comments.
-    // The issue job is one-shot: it fires at creation only, and a failed run
-    // closes the issue as failed — replies on an issue never re-trigger anything.
+    // Each watcher is derived from the job's own TriggerSpec (subject,
+    // activation, conditions, failure policy) — see the *Trigger() builders in
+    // src/jobs/process*Job.ts. Order matters for PRs sharing one ledger row:
+    // the review watcher claims a PR at creation first, so the reply watcher
+    // only ever fires on later comments.
     watchers: [
-      { job: processIssueJob(), source: issueSource(client), activation: "creation", closeOnFailure: true },
-      { job: processPullRequestJob(), source: pullRequestSource(client), activation: "creation" },
-      { job: processPullRequestCommentJob(), source: pullRequestReplySource(client), activation: "comment" },
+      watcherFor(processIssueJob(), client),
+      watcherFor(processPullRequestJob(), client),
+      watcherFor(processPullRequestCommentJob(), client),
     ],
     whitelist: config.github.userWhitelist,
     intervalMs: config.github.pollIntervalMs,

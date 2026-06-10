@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { JobReadStore } from "../jobs/store.js";
 import type { Job, ProcessStep, StepIO } from "../jobs/types.js";
-import { triggerInputs } from "../jobs/triggers.js";
+import { describeActivation, describeCondition, describeFailurePolicy } from "../jobs/trigger.js";
 import { groupOutputs, relayedOnFailure } from "./ioGroups.js";
 import type { OutputGroup } from "./ioGroups.js";
 
@@ -15,9 +15,19 @@ interface StepView extends ProcessStep {
   producesOnFailure: string[];
 }
 
-interface JobView extends Omit<Job, "steps"> {
+// The job's TriggerSpec rendered for the map's first card: the entry criteria
+// as human sentences (the spec stays the single source — these are derived).
+interface TriggerView {
+  id: string;
+  fires: string;
+  conditions: string[];
+  onFailure: string;
+  inputs: StepIO[];
+}
+
+interface JobView extends Omit<Job, "steps" | "trigger"> {
   steps: StepView[];
-  triggerInputs: StepIO[];
+  trigger: TriggerView;
 }
 
 export function dashboardRouter(store: JobReadStore): Router {
@@ -39,6 +49,12 @@ function toView(job: Job): JobView {
       relayedOnFailure: relayed[i] ?? [],
       producesOnFailure: step.outputs.filter((o) => o.feedsFailure).map((o) => o.key),
     })),
-    triggerInputs: triggerInputs(job.trigger),
+    trigger: {
+      id: job.trigger.id,
+      fires: describeActivation(job.trigger),
+      conditions: job.trigger.conditions.map((c) => describeCondition(c)),
+      onFailure: describeFailurePolicy(job.trigger),
+      inputs: job.trigger.inputs,
+    },
   };
 }

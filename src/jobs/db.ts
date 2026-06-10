@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createLogger } from "../logger.js";
 import { applySchema, SCHEMA_VERSION } from "./schema.js";
 import { asIoSource, asIoType } from "./io.js";
+import { parseTriggerSpec, serializeTriggerSpec } from "./trigger.js";
 import type {
   FailureHandler,
   IoValues,
@@ -106,7 +107,7 @@ function hydrateJob(db: DatabaseSync, row: Row): Job {
     id,
     name: text(row, "name"),
     description: text(row, "description"),
-    trigger: text(row, "trigger"),
+    trigger: parseTriggerSpec(text(row, "trigger")),
     steps: stepRows.map((s) => hydrateStep(db, id, s)),
     failureHandler: readFailureHandler(db, id),
   };
@@ -262,7 +263,7 @@ export function insertJob(db: DatabaseSync, job: Job): void {
     job.id,
     job.name,
     job.description,
-    job.trigger,
+    serializeTriggerSpec(job.trigger),
   );
   job.steps.forEach((step, position) => insertStep(db, job.id, step, position));
   insertFailureHandler(db, job.id, job.failureHandler);
@@ -287,7 +288,7 @@ export function upsertJob(db: DatabaseSync, job: Job): void {
       db.prepare("UPDATE jobs SET name = ?, description = ?, trigger = ? WHERE id = ?").run(
         job.name,
         job.description,
-        job.trigger,
+        serializeTriggerSpec(job.trigger),
         job.id,
       );
       db.prepare("DELETE FROM process_steps WHERE job_id = ?").run(job.id); // cascades step_io
@@ -297,7 +298,7 @@ export function upsertJob(db: DatabaseSync, job: Job): void {
         job.id,
         job.name,
         job.description,
-        job.trigger,
+        serializeTriggerSpec(job.trigger),
       );
     }
     job.steps.forEach((step, position) => insertStep(db, job.id, step, position));

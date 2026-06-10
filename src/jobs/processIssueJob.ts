@@ -1,8 +1,9 @@
-import type { Job, ProcessStep, StepIO } from "./types.js";
+import type { Job, ProcessStep, StepIO, TriggerSpec } from "./types.js";
 import type { IoSource, IoType } from "./io.js";
 import { loadGuidanceKey, loadPrompt } from "./prompts.js";
 import { failureHandler } from "./failureHandler.js";
 import { validateJobGraph } from "./validateJobGraph.js";
+import { validateWatchedTrigger } from "./trigger.js";
 
 function io(key: string, type: IoType, source: IoSource, description: string, guidance?: string, feedsFailure?: boolean): StepIO {
   return { key, type, source, description, ...(guidance !== undefined && { guidance }), ...(feedsFailure && { feedsFailure: true }) };
@@ -20,6 +21,26 @@ export function issueTriggerInputs(): StepIO[] {
     io("issueAuthor", "string", "trigger", "GitHub login that opened the issue"),
     io("jobUuid", "string", "trigger", "Per-job UUID"),
   ];
+}
+
+// The full trigger contract: this job is one-shot — it fires once when a
+// whitelisted user opens an issue, and comments never re-trigger it. A failed
+// run closes the issue as not planned (unless code was already pushed), so the
+// issue leaves the open feed for good either way.
+export function issueTrigger(): TriggerSpec {
+  const spec: TriggerSpec = {
+    id: "github.issue.opened",
+    subject: "issue",
+    activation: "creation",
+    conditions: [
+      { kind: "once-per-trigger" },
+      { kind: "author-whitelisted", of: "item" },
+    ],
+    onFailure: "close-not-planned",
+    inputs: issueTriggerInputs(),
+  };
+  validateWatchedTrigger(spec);
+  return spec;
 }
 
 function step(
@@ -57,7 +78,7 @@ export function processIssueJob(): Job {
     id: "process-issue",
     name: "Process New Issue",
     description: "Implement a whitelisted user's new issue with the LLM, open a PR, and have a second LLM review it.",
-    trigger: "github.issue.opened",
+    trigger: issueTrigger(),
     steps: [
       step("fetch-issue", "github.fetchIssue", "Fetch Issue",
         "Read the issue title and body and render the implementation user message.",
@@ -188,6 +209,6 @@ export function processIssueJob(): Job {
     failureHandler: failureHandler(),
   };
   // Strict init: refuse to hand back a job whose step contract doesn't hold.
-  validateJobGraph(job, issueTriggerInputs());
+  validateJobGraph(job, job.trigger.inputs);
   return job;
 }

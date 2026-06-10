@@ -4,6 +4,7 @@ import { unconsumedOutputs, validateJobGraph } from "./validateJobGraph.js";
 import { processIssueJob, issueTriggerInputs } from "./processIssueJob.js";
 import type { IoSource, IoType } from "./io.js";
 import type { Job, ProcessStep, StepIO } from "./types.js";
+import { manualTrigger } from "./trigger.js";
 
 function io(key: string, type: IoType, source: IoSource): StepIO {
   return { key, type, source, description: "" };
@@ -16,7 +17,7 @@ function step(id: string, inputs: StepIO[], outputs: StepIO[], systemPrompt?: st
 function job(steps: ProcessStep[]): Job {
   // A no-input failure handler: validates against any trigger, so these graph
   // tests stay focused on the steps. Handler-specific checks live in their own tests.
-  return { id: "j", name: "j", description: "", trigger: "t", steps, failureHandler: { id: "f", name: "f", description: "", inputs: [] } };
+  return { id: "j", name: "j", description: "", trigger: manualTrigger(), steps, failureHandler: { id: "f", name: "f", description: "", inputs: [] } };
 }
 
 test("the real processIssueJob graph validates against its trigger contract", () => {
@@ -110,7 +111,7 @@ test("unconsumedOutputs flags a step output the next step never reads, but not a
 // ---- failure handler (the terminal every step routes to on failure) ----------
 
 function jobWithHandler(inputs: StepIO[]): Job {
-  return { id: "j", name: "j", description: "", trigger: "t", steps: [], failureHandler: { id: "f", name: "f", description: "", inputs } };
+  return { id: "j", name: "j", description: "", trigger: manualTrigger(), steps: [], failureHandler: { id: "f", name: "f", description: "", inputs } };
 }
 
 test("a failure handler trigger input is satisfied by the trigger contract", () => {

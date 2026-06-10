@@ -1,14 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TriggerPoller, issueSource, pullRequestSource, pullRequestReplySource, isReviewablePullRequest, isSameRepoPullRequest, isAllowedAuthor, isPushProtected, formatRunId, failureNote, failureComment, attemptedSummary, failureOutputKeys, failureStateLine, hasCodeSideEffects, RETRY_EPILOGUE, CLOSED_EPILOGUE, LEFT_OPEN_EPILOGUE } from "./poller.js";
+import { TriggerPoller, watcherFor, conditionFilter, isSameRepoPullRequest, isAllowedAuthor, isPushProtected, formatRunId, failureNote, failureComment, attemptedSummary, failureOutputKeys, failureStateLine, hasCodeSideEffects, RETRY_EPILOGUE, CLOSED_EPILOGUE, LEFT_OPEN_EPILOGUE } from "./poller.js";
 import type { Watcher } from "./poller.js";
 import type { GitHubClient, IssueComment, IssueRef, PullRequestRef } from "./client.js";
 import { openDatabase } from "../jobs/db.js";
 import { SqliteJobStore } from "../jobs/sqliteStore.js";
 import { StepKindRegistry, stubExecutor } from "../jobs/stepKinds.js";
 import { llmDerivableKeys } from "../jobs/llmKind.js";
-import { processIssueJob } from "../jobs/processIssueJob.js";
-import { processPullRequestJob } from "../jobs/processPullRequestJob.js";
+import { processIssueJob, issueTrigger } from "../jobs/processIssueJob.js";
+import { processPullRequestJob, pullRequestTrigger } from "../jobs/processPullRequestJob.js";
 import { processPullRequestCommentJob } from "../jobs/processPullRequestCommentJob.js";
 import { failureHandler } from "../jobs/failureHandler.js";
 import type { Job, JobRun } from "../jobs/types.js";
@@ -119,16 +119,16 @@ function setup(issuesByRepo: Record<string, IssueRef[]>, opts: SetupOpts = {}) {
   const closed: CapturedClose[] = [];
   const thread = opts.thread ?? {};
   const client = { ...fakeClient(issuesByRepo, comments, thread, closed, opts.prs ?? {}), ...(opts.listBranchRules && { listBranchRules: opts.listBranchRules }) };
-  // Mirrors production wiring: the issue job is one-shot — creation only, and a
-  // failed run closes the issue as failed.
-  const watchers: Watcher[] = [{ job, source: issueSource(client), activation: "creation", closeOnFailure: true }];
+  // Mirrors production wiring: every watcher derives from the job's own
+  // TriggerSpec (the issue job's spec is one-shot + close-not-planned).
+  const watchers: Watcher[] = [watcherFor(job, client)];
   if (opts.prs !== undefined) {
     const prJob = processPullRequestJob();
     const replyJob = processPullRequestCommentJob();
     store.saveJob(prJob);
     store.saveJob(replyJob);
-    watchers.push({ job: prJob, source: pullRequestSource(client), activation: "creation" });
-    watchers.push({ job: replyJob, source: pullRequestReplySource(client), activation: "comment" });
+    watchers.push(watcherFor(prJob, client));
+    watchers.push(watcherFor(replyJob, client));
   }
   const poller = new TriggerPoller({
     client,
@@ -162,7 +162,7 @@ function failingJob(): Job {
     id: "process-issue",
     name: "Process New Issue",
     description: "Fails on purpose to exercise failure reporting.",
-    trigger: "github.issue.opened",
+    trigger: issueTrigger(),
     steps: [
       {
         id: "implement-issue",
@@ -188,7 +188,7 @@ function pushedThenFailsJob(): Job {
     id: "process-issue",
     name: "Process New Issue",
     description: "Pushes before a later failure.",
-    trigger: "github.issue.opened",
+    trigger: issueTrigger(),
     steps: [
       {
         id: "commit-push",
@@ -212,7 +212,7 @@ function openedPrThenFailsJob(): Job {
     id: "process-issue",
     name: "Process New Issue",
     description: "Opens a PR before a later failure.",
-    trigger: "github.issue.opened",
+    trigger: issueTrigger(),
     steps: [
       {
         id: "open-pr",
@@ -296,7 +296,7 @@ test("overlapping ticks join the in-flight scan instead of enqueueing twice", as
     client,
     store,
     registry: stubRegistryForJobs([job]),
-    watchers: [{ job, source: issueSource(client), activation: "creation" }],
+    watchers: [watcherFor(job, client)],
     whitelist: ["jeffreybergier"],
     intervalMs: 1000,
   });
@@ -345,7 +345,7 @@ test("a backlog shows queued runs in the dashboard before they start", async () 
     id: "process-issue",
     name: "Process New Issue",
     description: "",
-    trigger: "github.issue.opened",
+    trigger: issueTrigger(),
     steps: [{ id: "s1", kind: "wait", name: "s1", description: "", inputs: [], outputs: [] }],
     failureHandler: failureHandler(),
   };
@@ -430,18 +430,22 @@ test("a successful issue run never hits the failure-close path", async () => {
 
 // ---- pull-request watcher (same-repo PRs reviewed via the shared queue) -----
 
-test("isReviewablePullRequest accepts a same-repo branch and rejects forks", () => {
-  assert.equal(isReviewablePullRequest(pr("o/r", 1, "u", "feature/x", "o/r")), true);
-  assert.equal(isReviewablePullRequest(pr("o/r", 1, "u", "feature/x", "fork-owner/r")), false);
-  assert.equal(isReviewablePullRequest(pr("o/r", 1, "u", "feature/x", "")), false); // deleted head repo
+test("the review trigger's declared conditions accept a same-repo branch and reject forks", () => {
+  const reviewable = conditionFilter(pullRequestTrigger().conditions);
+  assert.equal(reviewable(pr("o/r", 1, "u", "feature/x", "o/r")), true);
+  assert.equal(reviewable(pr("o/r", 1, "u", "feature/x", "fork-owner/r")), false);
+  assert.equal(reviewable(pr("o/r", 1, "u", "feature/x", "")), false); // deleted head repo
 });
 
-test("isReviewablePullRequest rejects Strappy's own strappy/ branches", () => {
-  assert.equal(isReviewablePullRequest(pr("o/r", 1, "u", "strappy/issue-3/8e6e2f89")), false);
+test("the review trigger's declared conditions reject Strappy's own strappy/ branches", () => {
+  const reviewable = conditionFilter(pullRequestTrigger().conditions);
+  assert.equal(reviewable(pr("o/r", 1, "u", "strappy/issue-3/8e6e2f89")), false);
 });
 
-test("isReviewablePullRequest throws on a non-PullRequestRef", () => {
-  assert.throws(() => isReviewablePullRequest(null as never), /pr must be a PullRequestRef/);
+test("conditionFilter throws on a non-array and its same-repo gate on a non-PullRequestRef", () => {
+  assert.throws(() => conditionFilter(null as never), /conditions must be an array/);
+  const reviewable = conditionFilter(pullRequestTrigger().conditions);
+  assert.throws(() => reviewable(null as never), /pr must be a PullRequestRef/);
 });
 
 test("isSameRepoPullRequest accepts strappy/ branches (the reply job fixes Strappy's own PRs) and still rejects forks", () => {
@@ -618,7 +622,7 @@ test("poller does not comment when the job succeeds", async () => {
 function blockedJob(): Job {
   return {
     id: "process-issue", name: "Process New Issue", description: "blocks at the security gate",
-    trigger: "github.issue.opened",
+    trigger: issueTrigger(),
     steps: [{ id: "security-scan", kind: "security.scan", name: "Security Scan", description: "", inputs: [], outputs: [] }],
     failureHandler: failureHandler(),
   };

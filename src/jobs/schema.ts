@@ -3,7 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 // Bump whenever SCHEMA_SQL changes shape. openDatabase() rebuilds an on-disk DB
 // stamped with an older version, so a stale file self-heals instead of crashing
 // on a column it predates (the data dir is disposable by design).
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 // Relational mirror of the ISO 9001 process-map model in types.ts.
 // process_steps keep `position` so ordered steps survive a round-trip;
@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   id          TEXT PRIMARY KEY,
   name        TEXT NOT NULL,
   description TEXT NOT NULL,
+  -- TriggerSpec JSON (types.ts): subject, activation, conditions, failure
+  -- policy, and seeded inputs — the trigger contract round-trips like steps do.
   trigger     TEXT NOT NULL
 );
 

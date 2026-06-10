@@ -7,6 +7,47 @@ import type { IoSource, IoType } from "./io.js";
 export type StepStatus = "pending" | "running" | "succeeded" | "failed" | "skipped";
 export type RunStatus = "queued" | "running" | "succeeded" | "failed";
 
+// What a trigger watches: the open-issue feed or the open-PR feed.
+export type TriggerSubject = "issue" | "pull_request";
+
+// What may fire the trigger for a watched item. "creation": a never-seen item,
+// exactly once. "comment": a whitelisted comment newer than the ledger
+// watermark (the item's own author is NOT gated). "creation-or-comment": both.
+// Two triggers may share a subject only when their activations partition the
+// events (validateTriggerPartition checks this).
+export type Activation = "creation" | "comment" | "creation-or-comment";
+
+// What the poller does after a failed run, beyond posting the failure report.
+// "close-not-planned" is the one-shot issue policy (skipped when code was
+// already pushed); "comment-and-retry" leaves the thread open so a whitelisted
+// reply re-runs the job.
+export type FailurePolicy = "close-not-planned" | "comment-and-retry";
+
+// One entry criterion of a trigger, as data: the poller executes it (each kind
+// maps to a gate or a feed filter) and the dashboard renders it
+// (describeCondition), so the firing rules are part of the process map instead
+// of being buried in poller code.
+export type TriggerCondition =
+  | { kind: "author-whitelisted"; of: "item" | "comment" }
+  | { kind: "head-branch-in-same-repo" }
+  | { kind: "head-branch-not-prefixed"; prefix: string }
+  | { kind: "once-per-trigger" };
+
+// The typed contract of a job's trigger — the process map's "step zero". Like a
+// ProcessStep it declares outputs (`inputs`: the ambient constants seeded onto
+// the run), and additionally the entry criteria: what feed is watched, what
+// event fires it, which conditions gate it, and the failure policy. The poller
+// derives its watcher from this (poller.watcherFor), so the wiring cannot
+// drift from the declaration.
+export interface TriggerSpec {
+  id: string;
+  subject: TriggerSubject;
+  activation: Activation;
+  conditions: TriggerCondition[];
+  onFailure: FailurePolicy;
+  inputs: StepIO[];
+}
+
 export interface StepIO {
   key: string;
   type: IoType;
@@ -63,7 +104,7 @@ export interface Job {
   id: string;
   name: string;
   description: string;
-  trigger: string;
+  trigger: TriggerSpec;
   steps: ProcessStep[];
   // The terminal every step transitions to on failure (see FailureHandler).
   failureHandler: FailureHandler;

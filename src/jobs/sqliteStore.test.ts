@@ -4,6 +4,8 @@ import { openDatabase, seedDatabase } from "./db.js";
 import { SqliteJobStore } from "./sqliteStore.js";
 import { seedJobs, seedRuns } from "./seed.js";
 import { failureHandler } from "./failureHandler.js";
+import { manualTrigger } from "./trigger.js";
+import { issueTrigger } from "./processIssueJob.js";
 import type { Job, JobRun } from "./types.js";
 
 function freshStore(): SqliteJobStore {
@@ -15,7 +17,7 @@ function freshStore(): SqliteJobStore {
 // A minimal job (no steps) carrying the generic failure handler, for run-focused
 // round-trip tests that only need a job row to hang a run off.
 function bareJob(): Job {
-  return { id: "j", name: "J", description: "d", trigger: "manual", steps: [], failureHandler: failureHandler() };
+  return { id: "j", name: "J", description: "d", trigger: manualTrigger(), steps: [], failureHandler: failureHandler() };
 }
 
 function triggerStatus(db: ReturnType<typeof openDatabase>, repo: string, issueNumber: number): string {
@@ -183,7 +185,7 @@ test("saveJob + getJob round-trips a new job with its IO contract", () => {
     id: "echo",
     name: "Echo",
     description: "Round-trip a single step.",
-    trigger: "manual",
+    trigger: manualTrigger(),
     steps: [
       {
         id: "say",
@@ -207,7 +209,7 @@ test("a feedsFailure output marker round-trips through sqlite; a plain output st
     id: "mark",
     name: "Mark",
     description: "Mark one output as feeding the failure comment.",
-    trigger: "manual",
+    trigger: manualTrigger(),
     steps: [
       {
         id: "s",
@@ -234,7 +236,7 @@ test("saveJob + getJob round-trips a step's authored systemPrompt", () => {
     id: "triage",
     name: "Triage",
     description: "Triage an issue.",
-    trigger: "github.issue.opened",
+    trigger: issueTrigger(),
     steps: [
       {
         id: "classify",
@@ -259,7 +261,7 @@ test("saveJob + getJob round-trips output guidance and a derived source", () => 
     id: "implement",
     name: "Implement",
     description: "Implement and report.",
-    trigger: "github.issue.opened",
+    trigger: issueTrigger(),
     steps: [
       {
         id: "implement-issue",

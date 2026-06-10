@@ -5,6 +5,7 @@ import { llmDerivableKeys } from "./llmKind.js";
 import { validateJobRegistry } from "./validateJobRegistry.js";
 import { processIssueJob } from "./processIssueJob.js";
 import { failureHandler } from "./failureHandler.js";
+import { manualTrigger } from "./trigger.js";
 import type { IoSource, IoType } from "./io.js";
 import type { Job, ProcessStep, StepIO } from "./types.js";
 
@@ -17,7 +18,7 @@ function step(id: string, kind: string, outputs: StepIO[]): ProcessStep {
 }
 
 function job(steps: ProcessStep[]): Job {
-  return { id: "j", name: "j", description: "j", trigger: "t", steps, failureHandler: failureHandler() };
+  return { id: "j", name: "j", description: "j", trigger: manualTrigger(), steps, failureHandler: failureHandler() };
 }
 
 // Registry whose "llm" kind declares the real deriver set; "noop" derives nothing.

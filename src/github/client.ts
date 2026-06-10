@@ -130,7 +130,8 @@ function toIssueRef(repo: string, i: { number: number; user: { login: string } |
 }
 
 // Open PRs only; the same-repo (non-fork) policy is applied by the caller
-// (poller.isReviewablePullRequest), so this stays a faithful API read.
+// (the trigger's branch conditions, compiled by poller.conditionFilter), so
+// this stays a faithful API read.
 async function listOpenPullRequests(octokit: Octokit, repo: string): Promise<PullRequestRef[]> {
   const { owner, name } = parseRepo(repo);
   try {

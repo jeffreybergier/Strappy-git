@@ -45,8 +45,12 @@
       .failure-label { display: flex; align-items: center; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #a94442; padding-right: 6px; }
       .failure-arrow { color: #d9534f; }
       .failure-card { flex: 0 1 300px; min-width: 220px; }
-      .trigger-card { flex: 0 1 200px; min-width: 180px; }
+      .trigger-card { flex: 0 1 220px; min-width: 200px; }
       .trigger-card .panel-heading { background-color: #d9edf7; }
+      .trigger-fires { color: #31708f; font-size: 12px; margin-bottom: 8px; }
+      .trigger-conditions { list-style: none; padding-left: 0; margin: 4px 0 8px; }
+      .trigger-conditions li { font-size: 11px; color: #555; line-height: 1.5; }
+      .trigger-conditions .condition-check { color: #3c763d; margin-right: 3px; }
       .runs-table { table-layout: fixed; }
       .runs-table .col-status { width: 110px; }
       .runs-table .col-time { width: 90px; text-align: right; }
@@ -92,22 +96,34 @@
         <div class="panel panel-default">
           <div class="panel-heading">
             <strong><%= job.name %></strong>
-            <span class="label label-primary"><%= job.trigger %></span>
+            <span class="label label-primary"><%= job.trigger.id %></span>
             <div class="text-muted"><%= job.description %></div>
           </div>
           <div class="panel-body">
             <div class="step-flow">
-              <% if (job.triggerInputs && job.triggerInputs.length) { %>
+              <% if (job.trigger && (job.trigger.inputs.length || job.trigger.conditions.length)) { %>
                 <div class="panel panel-info step-card trigger-card">
                   <div class="panel-heading"><strong>Trigger</strong></div>
                   <div class="panel-body">
-                    <p class="small"><code><%= job.trigger %></code></p>
+                    <p class="small"><code><%= job.trigger.id %></code></p>
+                    <div class="trigger-fires"><%= job.trigger.fires %></div>
+                    <% if (job.trigger.conditions.length) { %>
+                      <div class="io-label">Only when</div>
+                      <ul class="trigger-conditions">
+                        <% job.trigger.conditions.forEach(function (condition) { %>
+                          <li><span class="condition-check">&#10003;</span><%= condition %></li>
+                        <% }); %>
+                      </ul>
+                    <% } %>
                     <div class="io-label">Outputs</div>
                     <ul class="io-list">
-                      <% job.triggerInputs.forEach(function (io) { %>
+                      <% job.trigger.inputs.forEach(function (io) { %>
                         <li><%= io.key %> <span class="io-type">:<%= io.type %></span></li>
                       <% }); %>
                     </ul>
+                    <div class="step-failure">
+                      <span class="failure-arrow">&#10007;</span><%= job.trigger.onFailure %>
+                    </div>
                   </div>
                 </div>
                 <div class="step-arrow">&rarr;</div>

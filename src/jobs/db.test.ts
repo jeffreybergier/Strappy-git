@@ -8,6 +8,7 @@ import { openDatabase, readJobs, syncJobs } from "./db.js";
 import { SqliteJobStore } from "./sqliteStore.js";
 import { SCHEMA_VERSION } from "./schema.js";
 import { failureHandler } from "./failureHandler.js";
+import { manualTrigger } from "./trigger.js";
 import type { Job } from "./types.js";
 
 function job(steps: string[], name = "J"): Job {
@@ -15,7 +16,7 @@ function job(steps: string[], name = "J"): Job {
     id: "j",
     name,
     description: "d",
-    trigger: "manual",
+    trigger: manualTrigger(),
     steps: steps.map((id) => ({
       id,
       kind: "llm",

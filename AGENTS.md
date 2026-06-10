@@ -22,8 +22,13 @@ whitelisted user REPLIES on any same-repo PR — whoever authored it, Strappy's
 own `strappy/…` PRs included — security-screen the thread, implement the
 feedback on the PR's head branch, push, and reply with what changed). A reply
 always means "change the code": the review job fires only at PR creation, the
-reply job owns every later whitelisted comment (`Activation` in
-`src/github/poller.ts` partitions the shared per-PR ledger row by event).
+reply job owns every later whitelisted comment. Each job declares its full
+firing contract as a typed **`TriggerSpec`** (subject, activation, conditions,
+failure policy, seeded inputs — the `*Trigger()` builders in
+`src/jobs/process*Job.ts`); the poller derives its watchers from the spec
+(`watcherFor`), `validateTriggerPartition` proves the two PR triggers'
+activations partition the shared per-PR ledger row, and the dashboard renders
+the conditions on each process map's trigger card.
 
 LLM access goes through **[pi.dev](https://pi.dev)** (the `@earendil-works/pi-*`
 packages, used as an **SDK / library — not the CLI**) talking to
@@ -149,16 +154,20 @@ src/
   github/
     client.ts          Octokit wrapper (issues, PRs, comments, branch rules)
     git.ts             shallow clone/branch/checkout/commit/push (token redacted)
-    poller.ts          TriggerPoller: watchers (job + source + activation) over
+    poller.ts          TriggerPoller: watchers derived from each job's
+                       TriggerSpec (watcherFor; branch conditions compile to
+                       feed filters) over
                        one ledger + sequential queue; issueSource /
                        pullRequestSource / pullRequestReplySource
   jobs/
-    types.ts           ISO 9001 types: Job, ProcessStep, StepIO, JobRun, StepRun
+    types.ts           ISO 9001 types: Job, TriggerSpec (subject/activation/
+                       conditions/failure policy), ProcessStep, StepIO, JobRun, StepRun
     processIssueJob.ts        the process-issue job graph + issue trigger contract
     processPullRequestJob.ts  the process-pull-request job graph + PR trigger contract
     processPullRequestCommentJob.ts  the reply-triggered branch-update job graph
     failureHandler.ts  shared failure-comment contract (numberKey: issue vs PR)
-    triggers.ts        trigger id -> trigger StepIO contract (dashboard)
+    trigger.ts         TriggerSpec helpers: validate (shape / watched-job policy /
+                       partition), describe (dashboard), serialize/parse (SQLite)
     seed.ts            job registry (all three processes) + empty seed runs
     scheduler.ts       runJob: two-scope value threading, run recording
     stepKinds.ts       StepKindRegistry + stubs for every kind
@@ -207,7 +216,7 @@ into later inputs and persists live/final run state through `SqliteJobStore`.
 ## Verified working
 
 - `npm install` clean; `npm run typecheck` clean (incl. `*.test.ts`).
-- `npm test` → 256 passing.
+- `npm test` → 281 passing.
 - The poller's PR listing (`listOpenPullRequests`) verified live read-only
   against the real repos (returned 0 open PRs; nothing mutated).
 - Dashboard boots, binds `0.0.0.0:3000`, `GET /` returns 200, renders the

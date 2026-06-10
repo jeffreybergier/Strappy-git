@@ -7,7 +7,8 @@ import type { StepValues } from "../jobs/stepKinds.js";
 import { validateJobRegistry } from "../jobs/validateJobRegistry.js";
 import { promptCheckComment } from "../jobs/githubKinds.js";
 import type { JobWriteStore, TriggerLedger } from "../jobs/store.js";
-import type { Job, JobRun, StepRun } from "../jobs/types.js";
+import type { Activation, Job, JobRun, StepRun, TriggerCondition } from "../jobs/types.js";
+import { validateTriggerPartition, validateWatchedTrigger } from "../jobs/trigger.js";
 import { uuidStem } from "./git.js";
 import type { GitHubClient, PullRequestRef } from "./client.js";
 
@@ -32,27 +33,29 @@ export interface TriggerSource {
   list(repo: string): Promise<TriggerItem[]>;
 }
 
-// What may fire a watcher's job for an item. "creation": a never-seen item by a
-// whitelisted author, exactly once. "comment": a whitelisted comment newer than
-// the ledger watermark (the item's own author is NOT gated). "creation-or-comment":
-// both. Two watchers can share one ledger row for the same PR only because their
-// activations partition the events: creation claims it once, comments advance it.
-export type Activation = "creation" | "comment" | "creation-or-comment";
-
-const ACTIVATIONS: readonly Activation[] = ["creation", "comment", "creation-or-comment"];
-
-// A job bound to the trigger source that fires it. The poller runs any number of
-// watchers over the same repo discovery, ledger, and sequential queue, so runs
-// from different processes still execute one at a time. closeOnFailure makes an
-// early failed run terminal: after the failure comment the issue is closed as
-// not_planned, so it leaves the open-issue feed and nothing re-triggers it. If
-// code was already pushed or a PR was opened, the issue stays open instead
-// (issues only — never set it on a PR watcher, closeIssue would close the PR).
+// A job bound to the trigger source that feeds it candidates. The poller runs
+// any number of watchers over the same repo discovery, ledger, and sequential
+// queue, so runs from different processes still execute one at a time. The
+// firing rules (activation, gates, failure policy) are NOT stored here — they
+// are read off job.trigger, the declared TriggerSpec, so the wiring cannot
+// drift from the contract the dashboard renders.
 export interface Watcher {
   job: Job;
   source: TriggerSource;
-  activation: Activation;
-  closeOnFailure?: boolean;
+}
+
+// Derives a watcher from the job's own TriggerSpec: the spec picks the feed
+// (subject), the feed filter (branch conditions), the activation, and the
+// failure policy. Refuses a spec that doesn't declare the gates the poller
+// enforces (validateWatchedTrigger), so watching an undeclared job is an error.
+export function watcherFor(job: Job, client: GitHubClient): Watcher {
+  if (!job || !job.trigger) throw new Error("[Poller.watcherFor] job with a trigger spec is required");
+  if (!client) throw new Error("[Poller.watcherFor] client is required");
+  validateWatchedTrigger(job.trigger);
+  const source = job.trigger.subject === "issue"
+    ? issueSource(client)
+    : pullRequestSource(client, conditionFilter(job.trigger.conditions));
+  return { job, source };
 }
 
 // Adapts the open-issue feed to the generic poller; inputs mirror
@@ -70,9 +73,10 @@ export function issueSource(client: GitHubClient): TriggerSource {
   };
 }
 
-// Same-repo gate shared by both PR watchers: only a PR whose head branch lives
-// in THIS repo can be checked out or pushed to — a fork's branch is outside the
-// trust boundary (and headRepo is "" when the fork was deleted, which also fails).
+// Same-repo gate behind the "head-branch-in-same-repo" condition: only a PR
+// whose head branch lives in THIS repo can be checked out or pushed to — a
+// fork's branch is outside the trust boundary (and headRepo is "" when the fork
+// was deleted, which also fails).
 export function isSameRepoPullRequest(pr: PullRequestRef): boolean {
   if (!pr || typeof pr.headRepo !== "string" || typeof pr.headRef !== "string" || typeof pr.baseRef !== "string") {
     throw new Error("[Poller.isSameRepoPullRequest] pr must be a PullRequestRef");
@@ -80,34 +84,31 @@ export function isSameRepoPullRequest(pr: PullRequestRef): boolean {
   return pr.headRepo === pr.repo;
 }
 
-// The review job's gate: same-repo, and NOT Strappy's own strappy/... branches —
-// the issue job already reviews the PRs it opens. The reply job has no such
-// exclusion (fixing Strappy's own PR on request is its headline use).
-export function isReviewablePullRequest(pr: PullRequestRef): boolean {
-  return isSameRepoPullRequest(pr) && !pr.headRef.startsWith("strappy/");
+// Compiles a spec's branch conditions into one feed filter — the executable
+// side of the declared TriggerCondition data, like StepKindRegistry resolves a
+// step kind. Author and once-per-trigger conditions return no predicate here:
+// they are the poller core's own whitelist and ledger gates.
+export function conditionFilter(conditions: TriggerCondition[]): (pr: PullRequestRef) => boolean {
+  if (!Array.isArray(conditions)) throw new Error("[Poller.conditionFilter] conditions must be an array");
+  const checks = conditions.map((c) => conditionPredicate(c)).filter((p) => p !== null);
+  return (pr) => checks.every((check) => check(pr));
+}
+
+function conditionPredicate(condition: TriggerCondition): ((pr: PullRequestRef) => boolean) | null {
+  if (condition.kind === "head-branch-in-same-repo") return isSameRepoPullRequest;
+  if (condition.kind === "head-branch-not-prefixed") return (pr) => !pr.headRef.startsWith(condition.prefix);
+  return null;
 }
 
 // Adapts the open-PR feed to the generic poller; inputs mirror
-// processPullRequestJob.pullRequestTriggerInputs.
-export function pullRequestSource(client: GitHubClient): TriggerSource {
+// pullRequestTriggerInputs / pullRequestCommentTriggerInputs (one shape).
+export function pullRequestSource(client: GitHubClient, filter: (pr: PullRequestRef) => boolean): TriggerSource {
   if (!client) throw new Error("[Poller.pullRequestSource] client is required");
+  if (typeof filter !== "function") throw new Error("[Poller.pullRequestSource] filter must be a function");
   return {
     name: "pull request(s)",
     list: async (repo) => (await client.listOpenPullRequests(repo))
-      .filter((pr) => isReviewablePullRequest(pr))
-      .map((pr) => triggerItem(pr)),
-  };
-}
-
-// The reply job's candidates: every same-repo open PR, whatever its author and
-// branch (strappy/... included). Which of them actually fires is decided by the
-// watcher's "comment" activation — only a whitelisted reply does.
-export function pullRequestReplySource(client: GitHubClient): TriggerSource {
-  if (!client) throw new Error("[Poller.pullRequestReplySource] client is required");
-  return {
-    name: "pull request reply candidate(s)",
-    list: async (repo) => (await client.listOpenPullRequests(repo))
-      .filter((pr) => isSameRepoPullRequest(pr))
+      .filter((pr) => filter(pr))
       .map((pr) => triggerItem(pr)),
   };
 }
@@ -329,7 +330,6 @@ interface QueueItem {
   trigger: TriggerItem;
   jobUuid: string;
   runId: string;
-  closeOnFailure: boolean;
 }
 
 export interface TriggerPollerDeps {
@@ -370,13 +370,12 @@ export class TriggerPoller {
     }
     for (const watcher of deps.watchers) {
       if (!watcher || !watcher.job || !watcher.source) throw new Error("[TriggerPoller] each watcher needs a job and a source");
-      if (!ACTIVATIONS.includes(watcher.activation)) {
-        throw new Error(`[TriggerPoller] watcher for "${watcher.job.id}" has invalid activation "${watcher.activation}"`);
-      }
-      if (watcher.closeOnFailure !== undefined && typeof watcher.closeOnFailure !== "boolean") {
-        throw new Error(`[TriggerPoller] watcher for "${watcher.job.id}" has non-boolean closeOnFailure`);
-      }
+      // Strict init: a watched job must declare every gate the poller enforces.
+      validateWatchedTrigger(watcher.job.trigger);
     }
+    // Watchers sharing a subject share ledger rows; their activations must
+    // partition the events or one trigger would steal the other's claims.
+    validateTriggerPartition(deps.watchers.map((w) => w.job.trigger));
     if (!Array.isArray(deps.whitelist)) throw new Error("[TriggerPoller] whitelist must be an array");
     if (!Number.isInteger(deps.intervalMs) || deps.intervalMs <= 0) {
       throw new Error("[TriggerPoller] intervalMs must be a positive integer");
@@ -474,9 +473,10 @@ export class TriggerPoller {
 
   // Enqueue at most one job per never-before-seen trigger. Claiming the row with
   // the triggering comment id makes every later tick a no-op until a strictly
-  // newer whitelisted comment appears, so each trigger runs exactly once.
+  // newer whitelisted comment appears, so each trigger runs exactly once — the
+  // spec's declared "once-per-trigger" condition.
   private async maybeEnqueue(watcher: Watcher, item: TriggerItem): Promise<void> {
-    const commentId = await this.triggerCommentId(watcher.activation, item);
+    const commentId = await this.triggerCommentId(watcher.job.trigger.activation, item);
     if (commentId === null) return;
     const job = watcher.job;
     const jobUuid = randomUUID();
@@ -486,7 +486,7 @@ export class TriggerPoller {
       return;
     }
     this.store.recordRun(queuedRun(job, runId, new Date().toISOString())); // visible as queued until it starts
-    this.queue.enqueue({ job, trigger: item, jobUuid, runId, closeOnFailure: watcher.closeOnFailure === true });
+    this.queue.enqueue({ job, trigger: item, jobUuid, runId });
     log.info("enqueue", `${item.repo}#${item.number} queued (depth ${this.queue.size}, comment ${commentId})`);
   }
 
@@ -550,25 +550,32 @@ export class TriggerPoller {
     }
   }
 
-  // Every failure surfaces the same way: comment first, then — for a one-shot
-  // watcher with no code side effects — close the issue as failed so it leaves
-  // the open feed for good.
+  // Every failure surfaces the same way: comment first, then — for a job whose
+  // spec declares "close-not-planned" and whose run had no code side effects —
+  // close the issue as failed so it leaves the open feed for good.
   private async reportFailure(item: QueueItem, body: string, run?: JobRun): Promise<void> {
     await this.postComment(item, body);
     if (this.shouldCloseAsFailed(item, run)) await this.closeAsFailed(item);
   }
 
+  // The job's declared failure policy (TriggerSpec.onFailure). Only an issue
+  // trigger may declare closing — validateWatchedTrigger rejects it on a PR
+  // subject, where closeIssue would close the PR itself.
+  private closesOnFailure(item: QueueItem): boolean {
+    return item.job.trigger.onFailure === "close-not-planned";
+  }
+
   private shouldCloseAsFailed(item: QueueItem, run?: JobRun): boolean {
-    if (!item.closeOnFailure) return false;
+    if (!this.closesOnFailure(item)) return false;
     return run === undefined || !hasCodeSideEffects(run);
   }
 
   private epilogue(item: QueueItem): string {
-    return item.closeOnFailure ? CLOSED_EPILOGUE : RETRY_EPILOGUE;
+    return this.closesOnFailure(item) ? CLOSED_EPILOGUE : RETRY_EPILOGUE;
   }
 
   private failureEpilogue(item: QueueItem, run: JobRun): string {
-    if (!item.closeOnFailure) return RETRY_EPILOGUE;
+    if (!this.closesOnFailure(item)) return RETRY_EPILOGUE;
     return hasCodeSideEffects(run) ? LEFT_OPEN_EPILOGUE : CLOSED_EPILOGUE;
   }
 
