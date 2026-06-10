@@ -43,11 +43,15 @@ const ACTIVATIONS: readonly Activation[] = ["creation", "comment", "creation-or-
 
 // A job bound to the trigger source that fires it. The poller runs any number of
 // watchers over the same repo discovery, ledger, and sequential queue, so runs
-// from different processes still execute one at a time.
+// from different processes still execute one at a time. closeOnFailure makes a
+// failed run terminal: after the failure comment the issue is closed as
+// not_planned, so it leaves the open-issue feed and nothing re-triggers it
+// (issues only — never set it on a PR watcher, closeIssue would close the PR).
 export interface Watcher {
   job: Job;
   source: TriggerSource;
   activation: Activation;
+  closeOnFailure?: boolean;
 }
 
 // Adapts the open-issue feed to the generic poller; inputs mirror
@@ -157,6 +161,15 @@ export function failureNote(run: JobRun): string {
   return note ? `step "${failed.stepId}" failed: ${note}` : `step "${failed.stepId}" failed`;
 }
 
+// The closing line of a failure comment — what happens next. RETRY_EPILOGUE is
+// for comment-retriggerable threads (PRs: a whitelisted reply runs the update
+// job); CLOSED_EPILOGUE is for one-shot issue runs, where the harness closes the
+// issue as failed and no reply will ever re-trigger it.
+export const RETRY_EPILOGUE =
+  "This is an automatic report from the harness. To retry, reply here — a comment from a whitelisted user re-runs the job on the whole thread.";
+export const CLOSED_EPILOGUE =
+  "This is an automatic report from the harness. This issue is now closed as failed; replies here will not re-run the job. To retry, open a new issue.";
+
 // The issue comment posted when a generic job step fails (not the prompt check —
 // that gets its own promptCheckComment). The harness frame is fixed, plain text —
 // NOT the model's voice — so faking Strappy's sass here never puts words in a
@@ -164,13 +177,17 @@ export function failureNote(run: JobRun): string {
 // technical message, not markdown). When the model spoke before the failure, its
 // own recorded PR summary is appended verbatim under an attributed header (its
 // genuine words, never synthesized) so a human learns what it set out to do.
-// States nothing was pushed and how to retry, so a human knows what happened.
-export function failureComment(runId: string, detail: string, summary?: string | null): string {
+// States nothing was pushed and what happens next (the epilogue), so a human
+// knows what happened.
+export function failureComment(runId: string, detail: string, summary?: string | null, epilogue: string = RETRY_EPILOGUE): string {
   if (typeof runId !== "string" || runId.trim() === "") {
     throw new Error("[Poller.failureComment] runId must be a non-empty string");
   }
   if (typeof detail !== "string" || detail.trim() === "") {
     throw new Error("[Poller.failureComment] detail must be a non-empty string");
+  }
+  if (typeof epilogue !== "string" || epilogue.trim() === "") {
+    throw new Error("[Poller.failureComment] epilogue must be a non-empty string");
   }
   const lines = [
     "**⚠️ Job failed**",
@@ -186,7 +203,7 @@ export function failureComment(runId: string, detail: string, summary?: string |
   if (typeof summary === "string" && summary.trim() !== "") {
     lines.push("", "---", "", "**What the model was trying to do**", "", summary.trim());
   }
-  lines.push("", "This is an automatic report from the harness. To retry, reply here — a comment from a whitelisted user re-runs the job on the whole thread.");
+  lines.push("", epilogue.trim());
   return lines.join("\n");
 }
 
@@ -237,6 +254,7 @@ interface QueueItem {
   trigger: TriggerItem;
   jobUuid: string;
   runId: string;
+  closeOnFailure: boolean;
 }
 
 export interface TriggerPollerDeps {
@@ -279,6 +297,9 @@ export class TriggerPoller {
       if (!watcher || !watcher.job || !watcher.source) throw new Error("[TriggerPoller] each watcher needs a job and a source");
       if (!ACTIVATIONS.includes(watcher.activation)) {
         throw new Error(`[TriggerPoller] watcher for "${watcher.job.id}" has invalid activation "${watcher.activation}"`);
+      }
+      if (watcher.closeOnFailure !== undefined && typeof watcher.closeOnFailure !== "boolean") {
+        throw new Error(`[TriggerPoller] watcher for "${watcher.job.id}" has non-boolean closeOnFailure`);
       }
     }
     if (!Array.isArray(deps.whitelist)) throw new Error("[TriggerPoller] whitelist must be an array");
@@ -390,7 +411,7 @@ export class TriggerPoller {
       return;
     }
     this.store.recordRun(queuedRun(job, runId, new Date().toISOString())); // visible as queued until it starts
-    this.queue.enqueue({ job, trigger: item, jobUuid, runId });
+    this.queue.enqueue({ job, trigger: item, jobUuid, runId, closeOnFailure: watcher.closeOnFailure === true });
     log.info("enqueue", `${item.repo}#${item.number} queued (depth ${this.queue.size}, comment ${commentId})`);
   }
 
@@ -446,11 +467,34 @@ export class TriggerPoller {
       );
       this.store.setStatus(repo, number, item.runId, run.status);
       log.info("run", `${repo}#${number} -> ${run.status} (${item.runId})`);
-      if (run.status === "failed") await this.postComment(item, this.failureBody(item, run));
+      if (run.status === "failed") await this.reportFailure(item, this.failureBody(item, run));
     } catch (error) {
       this.store.setStatus(repo, number, item.runId, "failed");
       log.error("run", `${repo}#${number} crashed`, error);
-      await this.postComment(item, failureComment(item.runId, message(error)));
+      await this.reportFailure(item, failureComment(item.runId, message(error), null, this.epilogue(item)));
+    }
+  }
+
+  // Every failure surfaces the same way: comment first, then — for a one-shot
+  // watcher — close the issue as failed so it leaves the open feed for good.
+  private async reportFailure(item: QueueItem, body: string): Promise<void> {
+    await this.postComment(item, body);
+    if (item.closeOnFailure) await this.closeAsFailed(item);
+  }
+
+  private epilogue(item: QueueItem): string {
+    return item.closeOnFailure ? CLOSED_EPILOGUE : RETRY_EPILOGUE;
+  }
+
+  // Best-effort, like postComment: a close failure is logged, never thrown. The
+  // worst case is an issue left open whose ledger row already blocks re-runs.
+  private async closeAsFailed(item: QueueItem): Promise<void> {
+    const { repo, number } = item.trigger;
+    try {
+      await this.client.closeIssue(repo, number, "not_planned");
+      log.info("closeAsFailed", `closed ${repo}#${number} as not planned`);
+    } catch (error) {
+      log.error("closeAsFailed", `could not close ${repo}#${number}`, error);
     }
   }
 
@@ -460,7 +504,7 @@ export class TriggerPoller {
   private failureBody(item: QueueItem, run: JobRun): string {
     const rejection = this.promptCheckRejection(item.job, run);
     if (rejection !== null) return promptCheckComment(false, rejection);
-    return failureComment(item.runId, failureNote(run), attemptedSummary(run, failureOutputKeys(item.job)));
+    return failureComment(item.runId, failureNote(run), attemptedSummary(run, failureOutputKeys(item.job)), this.epilogue(item));
   }
 
   // The guard model's voiced reason when THIS run failed at the security gate, or

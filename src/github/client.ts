@@ -43,6 +43,10 @@ export interface IssueComment {
   createdAt: string;
 }
 
+// GitHub's two close reasons: "completed" (the default when omitted) for a
+// resolved issue, "not_planned" for one given up on — the failure path uses it.
+export type CloseReason = "completed" | "not_planned";
+
 export interface GitHubClient {
   listAccessibleRepos(): Promise<string[]>;
   listOpenIssues(repo: string): Promise<IssueRef[]>;
@@ -53,7 +57,7 @@ export interface GitHubClient {
   listBranchRules(repo: string, branch: string): Promise<string[]>;
   openPullRequest(input: OpenPrInput): Promise<{ number: number; url: string }>;
   commentOnIssue(repo: string, issueNumber: number, body: string): Promise<number>;
-  closeIssue(repo: string, issueNumber: number): Promise<void>;
+  closeIssue(repo: string, issueNumber: number, reason?: CloseReason): Promise<void>;
 }
 
 export function parseRepo(repo: string): { owner: string; name: string } {
@@ -81,7 +85,7 @@ export function createGitHubClient(token: string): GitHubClient {
     listBranchRules: (repo, branch) => listBranchRules(octokit, repo, branch),
     openPullRequest: (input) => openPullRequest(octokit, input),
     commentOnIssue: (repo, n, body) => commentOnIssue(octokit, repo, n, body),
-    closeIssue: (repo, n) => closeIssue(octokit, repo, n),
+    closeIssue: (repo, n, reason) => closeIssue(octokit, repo, n, reason),
   };
 }
 
@@ -228,10 +232,13 @@ async function commentOnIssue(octokit: Octokit, repo: string, issueNumber: numbe
   }
 }
 
-async function closeIssue(octokit: Octokit, repo: string, issueNumber: number): Promise<void> {
+async function closeIssue(octokit: Octokit, repo: string, issueNumber: number, reason?: CloseReason): Promise<void> {
   const { owner, name } = parseRepo(repo);
   try {
-    await octokit.issues.update({ owner, repo: name, issue_number: issueNumber, state: "closed" });
+    await octokit.issues.update({
+      owner, repo: name, issue_number: issueNumber, state: "closed",
+      ...(reason !== undefined && { state_reason: reason }),
+    });
   } catch (error) {
     log.error("closeIssue", `failed for ${repo}#${issueNumber}`, error);
     throw error;

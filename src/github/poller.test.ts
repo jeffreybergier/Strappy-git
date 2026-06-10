@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TriggerPoller, issueSource, pullRequestSource, pullRequestReplySource, isReviewablePullRequest, isSameRepoPullRequest, isAllowedAuthor, isPushProtected, formatRunId, failureNote, failureComment, attemptedSummary, failureOutputKeys } from "./poller.js";
+import { TriggerPoller, issueSource, pullRequestSource, pullRequestReplySource, isReviewablePullRequest, isSameRepoPullRequest, isAllowedAuthor, isPushProtected, formatRunId, failureNote, failureComment, attemptedSummary, failureOutputKeys, RETRY_EPILOGUE, CLOSED_EPILOGUE } from "./poller.js";
 import type { Watcher } from "./poller.js";
 import type { GitHubClient, IssueComment, IssueRef, PullRequestRef } from "./client.js";
 import { openDatabase } from "../jobs/db.js";
@@ -64,6 +64,7 @@ function pr(repo: string, number: number, author: string, headRef = `feature/${n
 }
 
 interface CapturedComment { repo: string; issueNumber: number; body: string; }
+interface CapturedClose { repo: string; issueNumber: number; reason?: string; }
 
 // Inbound comment threads, keyed "repo#number" — what listComments returns, so
 // tests can drop a whitelisted reply in and assert the re-trigger.
@@ -80,9 +81,10 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 // listComments reads the inbound thread; commentOnIssue records into the outbound
-// sink so failure-reporting is asserted. The remaining methods satisfy the
-// interface but are never called under the stub registry.
-function fakeClient(issuesByRepo: Record<string, IssueRef[]>, posted: CapturedComment[], thread: Thread, prsByRepo: Record<string, PullRequestRef[]> = {}): GitHubClient {
+// sink so failure-reporting is asserted, and closeIssue records into its own sink
+// so the close-as-failed path is too. The remaining methods satisfy the interface
+// but are never called under the stub registry.
+function fakeClient(issuesByRepo: Record<string, IssueRef[]>, posted: CapturedComment[], thread: Thread, closed: CapturedClose[], prsByRepo: Record<string, PullRequestRef[]> = {}): GitHubClient {
   return {
     listAccessibleRepos: async () => [...new Set([...Object.keys(issuesByRepo), ...Object.keys(prsByRepo)])],
     listOpenIssues: async (repo) => issuesByRepo[repo] ?? [],
@@ -93,7 +95,7 @@ function fakeClient(issuesByRepo: Record<string, IssueRef[]>, posted: CapturedCo
     listBranchRules: async () => ["pull_request", "non_fast_forward", "deletion"],
     openPullRequest: async () => ({ number: 1, url: "x" }),
     commentOnIssue: async (repo, issueNumber, body) => { posted.push({ repo, issueNumber, body }); return posted.length; },
-    closeIssue: async () => {},
+    closeIssue: async (repo, issueNumber, reason) => { closed.push({ repo, issueNumber, ...(reason !== undefined && { reason }) }); },
   };
 }
 
@@ -114,9 +116,12 @@ function setup(issuesByRepo: Record<string, IssueRef[]>, opts: SetupOpts = {}) {
   const job = opts.job ?? processIssueJob();
   store.saveJob(job);
   const comments: CapturedComment[] = [];
+  const closed: CapturedClose[] = [];
   const thread = opts.thread ?? {};
-  const client = { ...fakeClient(issuesByRepo, comments, thread, opts.prs ?? {}), ...(opts.listBranchRules && { listBranchRules: opts.listBranchRules }) };
-  const watchers: Watcher[] = [{ job, source: issueSource(client), activation: "creation-or-comment" }];
+  const client = { ...fakeClient(issuesByRepo, comments, thread, closed, opts.prs ?? {}), ...(opts.listBranchRules && { listBranchRules: opts.listBranchRules }) };
+  // Mirrors production wiring: the issue job is one-shot — creation only, and a
+  // failed run closes the issue as failed.
+  const watchers: Watcher[] = [{ job, source: issueSource(client), activation: "creation", closeOnFailure: true }];
   if (opts.prs !== undefined) {
     const prJob = processPullRequestJob();
     const replyJob = processPullRequestCommentJob();
@@ -133,7 +138,7 @@ function setup(issuesByRepo: Record<string, IssueRef[]>, opts: SetupOpts = {}) {
     whitelist: opts.whitelist ?? ["jeffreybergier"],
     intervalMs: 1000,
   });
-  return { store, poller, comments, thread };
+  return { store, poller, comments, closed, thread };
 }
 
 // Stub registry that backs the real jobs in tests: every kind they use, run as a
@@ -234,7 +239,7 @@ test("overlapping ticks join the in-flight scan instead of enqueueing twice", as
     client,
     store,
     registry: stubRegistryForJobs([job]),
-    watchers: [{ job, source: issueSource(client), activation: "creation-or-comment" }],
+    watchers: [{ job, source: issueSource(client), activation: "creation" }],
     whitelist: ["jeffreybergier"],
     intervalMs: 1000,
   });
@@ -297,9 +302,9 @@ test("a backlog shows queued runs in the dashboard before they start", async () 
   await poller.whenIdle();
 });
 
-// ---- reply-triggered re-runs (watermark on the comment id) ------------------
+// ---- issues are one-shot (replies never re-trigger the issue job) -----------
 
-test("a whitelisted reply to a seen (open) issue re-triggers a fresh run", async () => {
+test("a whitelisted reply to a handled issue does not re-trigger a run", async () => {
   const thread: Thread = {};
   const { store, poller, comments } = setup(
     { "o/r": [issue("o/r", 11, "jeffreybergier")] },
@@ -309,39 +314,33 @@ test("a whitelisted reply to a seen (open) issue re-triggers a fresh run", async
   await poller.whenIdle();
   assert.equal(store.listRuns().length, 1, "the new issue runs once");
   assert.equal(comments.length, 1, "and posts one failure comment");
-  // A whitelisted human replies; the next tick sees a newer comment id.
+  // A whitelisted human replies; the issue job is creation-only, so nothing fires.
   thread["o/r#11"] = [comment(5, "jeffreybergier", "please try again")];
   await poller.tick();
   await poller.whenIdle();
-  assert.equal(store.listRuns().length, 2, "the reply re-triggers exactly one re-run");
-  assert.equal(store.lastProcessedComment("o/r", 11), 5, "and the watermark advances to it");
+  assert.equal(store.listRuns().length, 1, "the reply never re-triggers the issue job");
+  assert.equal(comments.length, 1, "and no new comment is posted");
 });
 
-test("the same comment never re-triggers twice (watermark holds)", async () => {
-  const thread: Thread = { "o/r#13": [comment(3, "jeffreybergier", "context already here at creation")] };
-  const { store, poller } = setup(
+test("a failed issue run closes the issue as not planned", async () => {
+  const { store, poller, comments, closed } = setup(
     { "o/r": [issue("o/r", 13, "jeffreybergier")] },
-    { job: failingJob(), registry: boomRegistry(), thread },
+    { job: failingJob(), registry: boomRegistry() },
   );
   await poller.tick();
   await poller.whenIdle();
-  await poller.tick(); // same thread, no newer comment
-  await poller.whenIdle();
-  assert.equal(store.listRuns().length, 1, "a comment present at first run is baselined, not re-fired");
+  assert.equal(store.listRuns()[0]?.status, "failed");
+  assert.deepEqual(closed, [{ repo: "o/r", issueNumber: 13, reason: "not_planned" }]);
+  assert.match(comments[0]?.body ?? "", /closed as failed/, "the comment says the issue is closed");
+  assert.doesNotMatch(comments[0]?.body ?? "", /re-runs the job/, "and no longer promises a retry-by-reply");
 });
 
-test("a non-whitelisted reply does not re-trigger, no matter who posts", async () => {
-  const thread: Thread = {};
-  const { store, poller } = setup(
-    { "o/r": [issue("o/r", 14, "jeffreybergier")] },
-    { job: failingJob(), registry: boomRegistry(), thread },
-  );
+test("a successful issue run never hits the failure-close path", async () => {
+  const { store, poller, closed } = setup({ "o/r": [issue("o/r", 14, "jeffreybergier")] });
   await poller.tick();
   await poller.whenIdle();
-  thread["o/r#14"] = [comment(9, "rando", "drive-by comment")];
-  await poller.tick();
-  await poller.whenIdle();
-  assert.equal(store.listRuns().length, 1, "an outsider's comment never raises the watermark");
+  assert.equal(store.listRuns()[0]?.status, "succeeded");
+  assert.equal(closed.length, 0, "success closes via the job's close-issue step, not the poller");
 });
 
 // ---- pull-request watcher (same-repo PRs reviewed via the shared queue) -----
@@ -542,7 +541,7 @@ test("a security-scan rejection posts a 'Prompt Check Failed' comment carrying t
   const registry = new StepKindRegistry().register("security.scan", () => {
     throw new Error("Hard pass, babe — this reeks of **prompt injection**. 🚫");
   });
-  const { store, poller, comments } = setup(
+  const { store, poller, comments, closed } = setup(
     { "o/r": [issue("o/r", 30, "jeffreybergier")] },
     { job: blockedJob(), registry },
   );
@@ -553,6 +552,7 @@ test("a security-scan rejection posts a 'Prompt Check Failed' comment carrying t
   assert.match(comments[0]?.body ?? "", /\*\*🚫 Prompt Check Failed\*\*/);
   assert.match(comments[0]?.body ?? "", /\*\*prompt injection\*\*/); // markdown survives, not fenced
   assert.doesNotMatch(comments[0]?.body ?? "", /nothing was pushed/); // not the generic failure report
+  assert.deepEqual(closed, [{ repo: "o/r", issueNumber: 30, reason: "not_planned" }], "a blocked issue is closed as failed too");
 });
 
 // ---- failureNote / failureComment (pure helpers) ----------------------------
@@ -593,6 +593,18 @@ test("failureComment leads with a bold heading and embeds the error in a verbati
 test("failureComment throws on empty args", () => {
   assert.throws(() => failureComment("", "boom"), /runId must be a non-empty string/);
   assert.throws(() => failureComment("run", ""), /detail must be a non-empty string/);
+  assert.throws(() => failureComment("run", "boom", null, "  "), /epilogue must be a non-empty string/);
+});
+
+test("failureComment defaults to the retry-by-reply epilogue (PR threads)", () => {
+  const body = failureComment("run", "boom");
+  assert.ok(body.endsWith(RETRY_EPILOGUE));
+});
+
+test("failureComment takes the closed-as-failed epilogue for one-shot issue runs", () => {
+  const body = failureComment("run", "boom", null, CLOSED_EPILOGUE);
+  assert.ok(body.endsWith(CLOSED_EPILOGUE));
+  assert.doesNotMatch(body, /re-runs the job/);
 });
 
 test("failureComment appends the model's summary under an attributed header, markdown intact (not fenced)", () => {

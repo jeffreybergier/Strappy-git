@@ -74,8 +74,10 @@ function startPoller(store: SqliteJobStore): void {
     cleanup: githubCleanup(deps),
     // Order matters for PRs sharing one ledger row: the review watcher claims a
     // PR at creation first, so the reply watcher only ever fires on later comments.
+    // The issue job is one-shot: it fires at creation only, and a failed run
+    // closes the issue as failed — replies on an issue never re-trigger anything.
     watchers: [
-      { job: processIssueJob(), source: issueSource(client), activation: "creation-or-comment" },
+      { job: processIssueJob(), source: issueSource(client), activation: "creation", closeOnFailure: true },
       { job: processPullRequestJob(), source: pullRequestSource(client), activation: "creation" },
       { job: processPullRequestCommentJob(), source: pullRequestReplySource(client), activation: "comment" },
     ],

@@ -11,7 +11,10 @@ A Node.js + TypeScript web server that watches GitHub repos for new issues,
 new same-repo pull requests, and whitelisted replies on same-repo PRs, then
 runs **ISO 9001-inspired job process maps** (steps with explicit, typed inputs
 and outputs) backed by an LLM. Three processes exist today: **process-issue**
-(implement a whitelisted user's new issue, open a PR, review it),
+(implement a whitelisted user's new issue, open a PR, review it — **one-shot**:
+it fires only when the issue is created; success closes the issue, failure
+posts the report and closes it as not planned, and comments on an issue never
+re-trigger anything),
 **process-pull-request** (review a whitelisted user's PR once, when it opens —
 only when its head branch lives in the same repo, never a fork — and post the
 verdict as a PR comment), and **process-pull-request-comment** (when a
@@ -137,7 +140,8 @@ config/models.json     OpenRouter provider + model declarations (pi.dev format)
 compose.yml            Docker services: altivec-intelligence, shell, serve, test
 prompts/               static step system prompts: implement-issue, code-review,
                        review-pull-request, update-pull-request, security-check,
-                       personality
+                       personality; guidance.json holds every per-field model
+                       guidance string, one section per step prompt
 src/
   config.ts            strict env loading (throws on missing/invalid)
   logger.ts            namespaced logger -> [Scope.method]

@@ -1,6 +1,6 @@
 import type { Job, ProcessStep, StepIO } from "./types.js";
 import type { IoSource, IoType } from "./io.js";
-import { loadPrompt } from "./prompts.js";
+import { loadGuidanceKey, loadPrompt } from "./prompts.js";
 import { failureHandler } from "./failureHandler.js";
 import { validateJobGraph } from "./validateJobGraph.js";
 
@@ -29,15 +29,10 @@ function step(
   return { id, kind, name, description, ...(systemPrompt !== undefined && { systemPrompt }), inputs, outputs };
 }
 
-// Model-facing guidance for the review step's one authored output. Exported so
+// Model-facing guidance for the review step's one authored output, loaded from
+// the "code-review" section of prompts/guidance.json. Exported so
 // processPullRequestJob's review step (the same llm.review kind) shares it.
-export const REVIEW_GUIDANCE =
-  "Your code review as a single markdown comment, posted verbatim on the pull request. " +
-  "Lead with a short verdict (approve / needs work), then the concrete findings " +
-  "(correctness, missing or stale tests, anything risky) with file references, then a note " +
-  "of what you ran — the tests, the program — and the result. Be honest: if it's broken or " +
-  "the tests fail, say so. This is human-facing, so write it in your full sassy, gay Strappy " +
-  "voice (the markdown does NOT make it straight).";
+export const REVIEW_GUIDANCE = loadGuidanceKey("code-review", "reviewComment");
 
 // Implementation flow: fetch the issue, screen it for prompt-injection /
 // dangerous instructions (the security gate, which blocks the run before any
@@ -107,11 +102,11 @@ export function processIssueJob(): Job {
           io("baseBranch", "string", "pass", "Carried to the open-PR step"),
           io("newBranch", "string", "pass", "Carried to the commit/push + open-PR steps")],
         [io("commitMessage", "string", "step", "Git commit message for the changes the model made",
-            "A conventional, imperative git commit message summarizing the change you made (e.g. \"Add retry logic to the HTTP client\"). This is human-facing — write it in your sassy, gay Strappy voice, not the straight tone you use inside the code."),
+            loadGuidanceKey("implement-issue", "commitMessage")),
           io("pullRequestTitle", "string", "step", "Concise PR title describing the change the model made",
-            "A short imperative title describing the change you made (e.g. \"Add retry logic to the HTTP client\"). Do not include the issue number — it is appended for you. Keep it under ~70 characters. This is human-facing, so let your sassy Strappy personality show."),
+            loadGuidanceKey("implement-issue", "pullRequestTitle")),
           io("pullRequestSummary", "string", "step", "Markdown summary of the changes, used as the PR body",
-            "A markdown summary of what changed and why, used verbatim as the PR body. Do not invent details that are not in the issue. This is a human-facing reply to your friends (not an in-repo doc), so write it in your full sassy, gay Strappy voice — the markdown formatting does NOT make it straight.",
+            loadGuidanceKey("implement-issue", "pullRequestSummary"),
             true), // feedsFailure: relayed into the failure comment as "attemptedSummary" if a later step fails
           io("cost", "number", "derived", "LLM spend for this step, reported by Pi"),
           io("model", "string", "derived", "Model id Pi ran this step against (PR footer)"),

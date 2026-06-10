@@ -1,6 +1,6 @@
 import type { Job, ProcessStep, StepIO } from "./types.js";
 import type { IoSource, IoType } from "./io.js";
-import { loadPrompt } from "./prompts.js";
+import { loadGuidanceKey, loadPrompt } from "./prompts.js";
 import { failureHandler } from "./failureHandler.js";
 import { validateJobGraph } from "./validateJobGraph.js";
 
@@ -87,9 +87,9 @@ export function processPullRequestCommentJob(): Job {
           io("workingDirectory", "string", "pass", "Local clone (PR branch checked out) the model explores and edits"),
           io("newBranch", "string", "pass", "Carried to the commit/push step")],
         [io("commitMessage", "string", "step", "Git commit message for the changes the model made",
-            "A conventional, imperative git commit message summarizing the change you made (e.g. \"Add retry logic to the HTTP client\"). This is human-facing — write it in your sassy, gay Strappy voice, not the straight tone you use inside the code."),
+            loadGuidanceKey("update-pull-request", "commitMessage")),
           io("updateSummary", "string", "step", "Markdown summary of the pushed changes, posted as the PR reply",
-            "A markdown summary of what you changed and why, posted verbatim as a PR reply to the human whose feedback you addressed. Do not invent details that are not in the thread. This is a human-facing reply to your friends, so write it in your full sassy, gay Strappy voice — the markdown formatting does NOT make it straight.",
+            loadGuidanceKey("update-pull-request", "updateSummary"),
             true), // feedsFailure: relayed into the failure comment as "attemptedSummary" if a later step fails
           io("cost", "number", "derived", "LLM spend for this step, reported by Pi (comment footer)"),
           io("model", "string", "derived", "Model id Pi ran this step against (comment footer)"),
