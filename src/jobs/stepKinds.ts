@@ -125,6 +125,7 @@ export function defaultStepKinds(): StepKindRegistry {
     .register("git.commitPush", stubExecutor)
     .register("github.openPullRequest", stubExecutor)
     .register("github.commentPr", stubExecutor)
+    .register("github.commentUpdate", stubExecutor)
     .register("github.closeIssue", stubExecutor);
   log.info("defaultStepKinds", `registered ${registry.list().length} step kinds`);
   return registry;

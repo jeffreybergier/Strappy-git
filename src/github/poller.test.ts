@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TriggerPoller, issueSource, pullRequestSource, isReviewablePullRequest, isAllowedAuthor, isPushProtected, formatRunId, failureNote, failureComment, attemptedSummary, failureOutputKeys } from "./poller.js";
+import { TriggerPoller, issueSource, pullRequestSource, pullRequestReplySource, isReviewablePullRequest, isSameRepoPullRequest, isAllowedAuthor, isPushProtected, formatRunId, failureNote, failureComment, attemptedSummary, failureOutputKeys } from "./poller.js";
 import type { Watcher } from "./poller.js";
 import type { GitHubClient, IssueComment, IssueRef, PullRequestRef } from "./client.js";
 import { openDatabase } from "../jobs/db.js";
@@ -9,6 +9,7 @@ import { StepKindRegistry, stubExecutor } from "../jobs/stepKinds.js";
 import { llmDerivableKeys } from "../jobs/llmKind.js";
 import { processIssueJob } from "../jobs/processIssueJob.js";
 import { processPullRequestJob } from "../jobs/processPullRequestJob.js";
+import { processPullRequestCommentJob } from "../jobs/processPullRequestCommentJob.js";
 import { failureHandler } from "../jobs/failureHandler.js";
 import type { Job, JobRun } from "../jobs/types.js";
 
@@ -102,7 +103,8 @@ interface SetupOpts {
   registry?: StepKindRegistry;
   thread?: Thread;
   listBranchRules?: GitHubClient["listBranchRules"];
-  // Open PRs by repo; providing them adds a process-pull-request watcher.
+  // Open PRs by repo; providing them adds both PR watchers (review + reply),
+  // mirroring production wiring.
   prs?: Record<string, PullRequestRef[]>;
 }
 
@@ -114,11 +116,14 @@ function setup(issuesByRepo: Record<string, IssueRef[]>, opts: SetupOpts = {}) {
   const comments: CapturedComment[] = [];
   const thread = opts.thread ?? {};
   const client = { ...fakeClient(issuesByRepo, comments, thread, opts.prs ?? {}), ...(opts.listBranchRules && { listBranchRules: opts.listBranchRules }) };
-  const watchers: Watcher[] = [{ job, source: issueSource(client) }];
+  const watchers: Watcher[] = [{ job, source: issueSource(client), activation: "creation-or-comment" }];
   if (opts.prs !== undefined) {
     const prJob = processPullRequestJob();
+    const replyJob = processPullRequestCommentJob();
     store.saveJob(prJob);
-    watchers.push({ job: prJob, source: pullRequestSource(client) });
+    store.saveJob(replyJob);
+    watchers.push({ job: prJob, source: pullRequestSource(client), activation: "creation" });
+    watchers.push({ job: replyJob, source: pullRequestReplySource(client), activation: "comment" });
   }
   const poller = new TriggerPoller({
     client,
@@ -229,7 +234,7 @@ test("overlapping ticks join the in-flight scan instead of enqueueing twice", as
     client,
     store,
     registry: stubRegistryForJobs([job]),
-    watchers: [{ job, source: issueSource(client) }],
+    watchers: [{ job, source: issueSource(client), activation: "creation-or-comment" }],
     whitelist: ["jeffreybergier"],
     intervalMs: 1000,
   });
@@ -355,6 +360,12 @@ test("isReviewablePullRequest throws on a non-PullRequestRef", () => {
   assert.throws(() => isReviewablePullRequest(null as never), /pr must be a PullRequestRef/);
 });
 
+test("isSameRepoPullRequest accepts strappy/ branches (the reply job fixes Strappy's own PRs) and still rejects forks", () => {
+  assert.equal(isSameRepoPullRequest(pr("o/r", 1, "u", "strappy/issue-3/8e6e2f89")), true);
+  assert.equal(isSameRepoPullRequest(pr("o/r", 1, "u", "feature/x", "fork-owner/r")), false);
+  assert.throws(() => isSameRepoPullRequest(null as never), /pr must be a PullRequestRef/);
+});
+
 test("poller enqueues and processes a whitelisted user's same-repo PR", async () => {
   const { store, poller } = setup({}, { prs: { "o/r": [pr("o/r", 8, "jeffreybergier")] } });
   await poller.tick();
@@ -395,17 +406,66 @@ test("issues and PRs run through one shared poller, ledger, and queue", async ()
   assert.ok(store.listRuns().every((r) => r.status === "succeeded"));
 });
 
-test("a whitelisted reply on a reviewed PR re-triggers a fresh review", async () => {
+// ---- reply watcher (whitelisted PR comments fire the update job) ------------
+
+test("a whitelisted reply on a reviewed PR fires the update job, not a re-review", async () => {
   const thread: Thread = {};
   const { store, poller } = setup({}, { prs: { "o/r": [pr("o/r", 12, "jeffreybergier")] }, thread });
   await poller.tick();
   await poller.whenIdle();
   assert.equal(store.listRuns().length, 1, "the new PR runs once");
-  thread["o/r#12"] = [comment(6, "jeffreybergier", "pushed fixes, look again")];
+  assert.match(store.listRuns()[0]?.id ?? "", /process-pull-request\//, "and that run is the review");
+  thread["o/r#12"] = [comment(6, "jeffreybergier", "please also fix the edge case")];
   await poller.tick();
   await poller.whenIdle();
-  assert.equal(store.listRuns().length, 2, "the reply re-triggers exactly one re-run");
-  assert.equal(store.lastProcessedComment("o/r", 12), 6, "and the watermark advances to it");
+  const ids = store.listRuns().map((r) => r.id);
+  assert.equal(ids.length, 2, "the reply triggers exactly one more run");
+  const updateRuns = ids.filter((id) => /^o\/r#12\/process-pull-request-comment\/[0-9a-f]{8}$/.test(id));
+  assert.equal(updateRuns.length, 1, "and it is the update job, not a second review");
+  assert.equal(store.lastProcessedComment("o/r", 12), 6, "the watermark advances to the reply");
+  await poller.tick(); // same thread again
+  await poller.whenIdle();
+  assert.equal(store.listRuns().length, 2, "the same comment never fires twice");
+});
+
+test("a whitelisted reply on Strappy's own strappy/ PR fires the update job (the review watcher excludes it)", async () => {
+  const thread: Thread = {};
+  const prs = { "o/r": [pr("o/r", 15, "strappy-bot", "strappy/issue-3/8e6e2f89")] };
+  const { store, poller } = setup({}, { prs, thread });
+  await poller.tick();
+  await poller.whenIdle();
+  assert.equal(store.listRuns().length, 0, "opening alone fires nothing — no whitelisted comment yet");
+  thread["o/r#15"] = [comment(7, "jeffreybergier", "tests are missing, add them")];
+  await poller.tick();
+  await poller.whenIdle();
+  assert.equal(store.listRuns().length, 1);
+  assert.match(store.listRuns()[0]?.id ?? "", /^o\/r#15\/process-pull-request-comment\/[0-9a-f]{8}$/);
+});
+
+test("the reply job ignores the PR author's whitelist status — only the commenter is gated", async () => {
+  const thread: Thread = { "o/r#16": [comment(8, "jeffreybergier", "fix this please")] };
+  const { store, poller } = setup({}, { prs: { "o/r": [pr("o/r", 16, "coworker")] }, thread });
+  await poller.tick();
+  await poller.whenIdle();
+  assert.equal(store.listRuns().length, 1, "a whitelisted reply fires even on a non-whitelisted author's PR");
+  assert.match(store.listRuns()[0]?.id ?? "", /process-pull-request-comment\//);
+});
+
+test("a non-whitelisted reply fires nothing, on anyone's PR", async () => {
+  const thread: Thread = { "o/r#17": [comment(9, "rando", "do something dangerous")] };
+  const { store, poller } = setup({}, { prs: { "o/r": [pr("o/r", 17, "strappy-bot", "strappy/issue-4/aa11bb22")] }, thread });
+  await poller.tick();
+  await poller.whenIdle();
+  assert.equal(store.listRuns().length, 0);
+  assert.equal(store.isProcessed("o/r", 17), false, "nothing is even claimed");
+});
+
+test("a whitelisted reply on a fork PR fires nothing (no branch to push to)", async () => {
+  const thread: Thread = { "o/r#18": [comment(10, "jeffreybergier", "fix it")] };
+  const { store, poller } = setup({}, { prs: { "o/r": [pr("o/r", 18, "jeffreybergier", "feature/x", "fork-owner/r")] }, thread });
+  await poller.tick();
+  await poller.whenIdle();
+  assert.equal(store.listRuns().length, 0);
 });
 
 // ---- branch-protection check (advisory: warn per tick, never block) ---------

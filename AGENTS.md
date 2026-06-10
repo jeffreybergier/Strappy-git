@@ -7,13 +7,20 @@ inside the image.)
 
 ## What this project is
 
-A Node.js + TypeScript web server that watches GitHub repos for new issues and
-new same-repo pull requests from whitelisted users, then runs **ISO
-9001-inspired job process maps** (steps with explicit, typed inputs and
-outputs) backed by an LLM. Two processes exist today: **process-issue**
-(implement a new issue, open a PR, review it) and **process-pull-request**
-(review a whitelisted user's PR — only when its head branch lives in the same
-repo, never a fork — and post the verdict as a PR comment).
+A Node.js + TypeScript web server that watches GitHub repos for new issues,
+new same-repo pull requests, and whitelisted replies on same-repo PRs, then
+runs **ISO 9001-inspired job process maps** (steps with explicit, typed inputs
+and outputs) backed by an LLM. Three processes exist today: **process-issue**
+(implement a whitelisted user's new issue, open a PR, review it),
+**process-pull-request** (review a whitelisted user's PR once, when it opens —
+only when its head branch lives in the same repo, never a fork — and post the
+verdict as a PR comment), and **process-pull-request-comment** (when a
+whitelisted user REPLIES on any same-repo PR — whoever authored it, Strappy's
+own `strappy/…` PRs included — security-screen the thread, implement the
+feedback on the PR's head branch, push, and reply with what changed). A reply
+always means "change the code": the review job fires only at PR creation, the
+reply job owns every later whitelisted comment (`Activation` in
+`src/github/poller.ts` partitions the shared per-PR ledger row by event).
 
 LLM access goes through **[pi.dev](https://pi.dev)** (the `@earendil-works/pi-*`
 packages, used as an **SDK / library — not the CLI**) talking to
@@ -129,7 +136,8 @@ Copy `.env.example` → `.env` (the repo `.gitignore` ignores `.env`, keeps
 config/models.json     OpenRouter provider + model declarations (pi.dev format)
 compose.yml            Docker services: altivec-intelligence, shell, serve, test
 prompts/               static step system prompts: implement-issue, code-review,
-                       review-pull-request, security-check, personality
+                       review-pull-request, update-pull-request, security-check,
+                       personality
 src/
   config.ts            strict env loading (throws on missing/invalid)
   logger.ts            namespaced logger -> [Scope.method]
@@ -137,15 +145,17 @@ src/
   github/
     client.ts          Octokit wrapper (issues, PRs, comments, branch rules)
     git.ts             shallow clone/branch/checkout/commit/push (token redacted)
-    poller.ts          TriggerPoller: watchers (job + trigger source) over one
-                       ledger + sequential queue; issueSource / pullRequestSource
+    poller.ts          TriggerPoller: watchers (job + source + activation) over
+                       one ledger + sequential queue; issueSource /
+                       pullRequestSource / pullRequestReplySource
   jobs/
     types.ts           ISO 9001 types: Job, ProcessStep, StepIO, JobRun, StepRun
     processIssueJob.ts        the process-issue job graph + issue trigger contract
     processPullRequestJob.ts  the process-pull-request job graph + PR trigger contract
+    processPullRequestCommentJob.ts  the reply-triggered branch-update job graph
     failureHandler.ts  shared failure-comment contract (numberKey: issue vs PR)
     triggers.ts        trigger id -> trigger StepIO contract (dashboard)
-    seed.ts            job registry (both processes) + empty seed runs
+    seed.ts            job registry (all three processes) + empty seed runs
     scheduler.ts       runJob: two-scope value threading, run recording
     stepKinds.ts       StepKindRegistry + stubs for every kind
     githubKinds.ts     live registry: git/GitHub/LLM-backed step executors
@@ -193,7 +203,7 @@ into later inputs and persists live/final run state through `SqliteJobStore`.
 ## Verified working
 
 - `npm install` clean; `npm run typecheck` clean (incl. `*.test.ts`).
-- `npm test` → 242 passing.
+- `npm test` → 256 passing.
 - The poller's PR listing (`listOpenPullRequests`) verified live read-only
   against the real repos (returned 0 open PRs; nothing mutated).
 - Dashboard boots, binds `0.0.0.0:3000`, `GET /` returns 200, renders the

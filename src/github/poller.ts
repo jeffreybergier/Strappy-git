@@ -32,12 +32,22 @@ export interface TriggerSource {
   list(repo: string): Promise<TriggerItem[]>;
 }
 
+// What may fire a watcher's job for an item. "creation": a never-seen item by a
+// whitelisted author, exactly once. "comment": a whitelisted comment newer than
+// the ledger watermark (the item's own author is NOT gated). "creation-or-comment":
+// both. Two watchers can share one ledger row for the same PR only because their
+// activations partition the events: creation claims it once, comments advance it.
+export type Activation = "creation" | "comment" | "creation-or-comment";
+
+const ACTIVATIONS: readonly Activation[] = ["creation", "comment", "creation-or-comment"];
+
 // A job bound to the trigger source that fires it. The poller runs any number of
 // watchers over the same repo discovery, ledger, and sequential queue, so runs
 // from different processes still execute one at a time.
 export interface Watcher {
   job: Job;
   source: TriggerSource;
+  activation: Activation;
 }
 
 // Adapts the open-issue feed to the generic poller; inputs mirror
@@ -55,15 +65,21 @@ export function issueSource(client: GitHubClient): TriggerSource {
   };
 }
 
-// Same-repo gate for the PR job: only a PR whose head branch lives in THIS repo
-// is reviewable — a fork's branch is outside the trust boundary (and headRepo is
-// "" when the fork was deleted, which also fails). Strappy's own strappy/...
-// branches are excluded too: the issue job already reviews the PRs it opens.
-export function isReviewablePullRequest(pr: PullRequestRef): boolean {
+// Same-repo gate shared by both PR watchers: only a PR whose head branch lives
+// in THIS repo can be checked out or pushed to — a fork's branch is outside the
+// trust boundary (and headRepo is "" when the fork was deleted, which also fails).
+export function isSameRepoPullRequest(pr: PullRequestRef): boolean {
   if (!pr || typeof pr.headRepo !== "string" || typeof pr.headRef !== "string") {
-    throw new Error("[Poller.isReviewablePullRequest] pr must be a PullRequestRef");
+    throw new Error("[Poller.isSameRepoPullRequest] pr must be a PullRequestRef");
   }
-  return pr.headRepo === pr.repo && !pr.headRef.startsWith("strappy/");
+  return pr.headRepo === pr.repo;
+}
+
+// The review job's gate: same-repo, and NOT Strappy's own strappy/... branches —
+// the issue job already reviews the PRs it opens. The reply job has no such
+// exclusion (fixing Strappy's own PR on request is its headline use).
+export function isReviewablePullRequest(pr: PullRequestRef): boolean {
+  return isSameRepoPullRequest(pr) && !pr.headRef.startsWith("strappy/");
 }
 
 // Adapts the open-PR feed to the generic poller; inputs mirror
@@ -74,12 +90,29 @@ export function pullRequestSource(client: GitHubClient): TriggerSource {
     name: "pull request(s)",
     list: async (repo) => (await client.listOpenPullRequests(repo))
       .filter((pr) => isReviewablePullRequest(pr))
-      .map((pr) => ({
-        repo: pr.repo,
-        number: pr.number,
-        author: pr.author,
-        inputs: { repo: pr.repo, prNumber: pr.number, prAuthor: pr.author, prBranch: pr.headRef },
-      })),
+      .map((pr) => triggerItem(pr)),
+  };
+}
+
+// The reply job's candidates: every same-repo open PR, whatever its author and
+// branch (strappy/... included). Which of them actually fires is decided by the
+// watcher's "comment" activation — only a whitelisted reply does.
+export function pullRequestReplySource(client: GitHubClient): TriggerSource {
+  if (!client) throw new Error("[Poller.pullRequestReplySource] client is required");
+  return {
+    name: "pull request reply candidate(s)",
+    list: async (repo) => (await client.listOpenPullRequests(repo))
+      .filter((pr) => isSameRepoPullRequest(pr))
+      .map((pr) => triggerItem(pr)),
+  };
+}
+
+function triggerItem(pr: PullRequestRef): TriggerItem {
+  return {
+    repo: pr.repo,
+    number: pr.number,
+    author: pr.author,
+    inputs: { repo: pr.repo, prNumber: pr.number, prAuthor: pr.author, prBranch: pr.headRef },
   };
 }
 
@@ -244,6 +277,9 @@ export class TriggerPoller {
     }
     for (const watcher of deps.watchers) {
       if (!watcher || !watcher.job || !watcher.source) throw new Error("[TriggerPoller] each watcher needs a job and a source");
+      if (!ACTIVATIONS.includes(watcher.activation)) {
+        throw new Error(`[TriggerPoller] watcher for "${watcher.job.id}" has invalid activation "${watcher.activation}"`);
+      }
     }
     if (!Array.isArray(deps.whitelist)) throw new Error("[TriggerPoller] whitelist must be an array");
     if (!Number.isInteger(deps.intervalMs) || deps.intervalMs <= 0) {
@@ -320,7 +356,7 @@ export class TriggerPoller {
     try {
       const items = await watcher.source.list(repo);
       log.info("pollRepo", `${repo}: ${items.length} open ${watcher.source.name}`);
-      for (const item of items) await this.maybeEnqueue(watcher.job, item);
+      for (const item of items) await this.maybeEnqueue(watcher, item);
     } catch (error) {
       log.error("pollRepo", `${watcher.source.name} failed for ${repo}`, error);
     }
@@ -343,9 +379,10 @@ export class TriggerPoller {
   // Enqueue at most one job per never-before-seen trigger. Claiming the row with
   // the triggering comment id makes every later tick a no-op until a strictly
   // newer whitelisted comment appears, so each trigger runs exactly once.
-  private async maybeEnqueue(job: Job, item: TriggerItem): Promise<void> {
-    const commentId = await this.triggerCommentId(item);
+  private async maybeEnqueue(watcher: Watcher, item: TriggerItem): Promise<void> {
+    const commentId = await this.triggerCommentId(watcher.activation, item);
     if (commentId === null) return;
+    const job = watcher.job;
     const jobUuid = randomUUID();
     const runId = formatRunId(item.repo, item.number, job.id, jobUuid);
     if (!this.store.claimProcessing(item.repo, item.number, runId, commentId)) {
@@ -357,19 +394,32 @@ export class TriggerPoller {
     log.info("enqueue", `${item.repo}#${item.number} queued (depth ${this.queue.size}, comment ${commentId})`);
   }
 
-  // The comment id to claim for this run, or null when nothing new should run. A
-  // brand-new item (no ledger row) triggers on a whitelisted author and
-  // baselines to its newest whitelisted comment, so replies already present at
-  // creation ride along in the prompt instead of re-firing. An item already seen
-  // re-triggers only on a whitelisted comment strictly newer than the watermark.
-  private async triggerCommentId(item: TriggerItem): Promise<number | null> {
-    if (!this.store.isProcessed(item.repo, item.number)) {
-      if (isAllowedAuthor(item.author, this.whitelist)) return this.newestWhitelistedComment(item);
+  // The comment id to claim for this run, or null when nothing should run for
+  // this watcher. An item already in the ledger re-triggers only a comment-
+  // activated watcher, and only on a whitelisted comment strictly newer than
+  // the watermark; a never-seen item is decided by firstSight.
+  private async triggerCommentId(activation: Activation, item: TriggerItem): Promise<number | null> {
+    if (!this.store.isProcessed(item.repo, item.number)) return this.firstSight(activation, item);
+    if (activation === "creation") return null;
+    const newest = await this.newestWhitelistedComment(item);
+    return newest > this.store.lastProcessedComment(item.repo, item.number) ? newest : null;
+  }
+
+  // First sight of an item (no ledger row yet). A comment-activated watcher
+  // ignores the item's author and fires only once a whitelisted comment exists.
+  // A creation-activated watcher fires on a whitelisted author, baselining the
+  // watermark to the newest whitelisted comment so replies already present at
+  // creation ride along in the prompt instead of re-firing later.
+  private async firstSight(activation: Activation, item: TriggerItem): Promise<number | null> {
+    if (activation === "comment") {
+      const newest = await this.newestWhitelistedComment(item);
+      return newest > 0 ? newest : null;
+    }
+    if (!isAllowedAuthor(item.author, this.whitelist)) {
       log.info("skip", `${item.repo}#${item.number}: author @${item.author} not whitelisted`);
       return null;
     }
-    const newest = await this.newestWhitelistedComment(item);
-    return newest > this.store.lastProcessedComment(item.repo, item.number) ? newest : null;
+    return this.newestWhitelistedComment(item);
   }
 
   // The id of the newest comment authored by a whitelisted user, or 0 if none.

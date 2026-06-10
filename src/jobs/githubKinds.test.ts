@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { prTitle, prBody, reviewBody, promptCheckComment, branchName, buildPrompt } from "./githubKinds.js";
+import { prTitle, prBody, reviewBody, updateBody, promptCheckComment, branchName, buildPrompt } from "./githubKinds.js";
 import type { IssueComment } from "../github/client.js";
 
 const usage = { model: "meta-llama/llama-3.3-70b-instruct", cost: 0.0234, inputTokens: 12304, outputTokens: 1872 };
@@ -91,6 +91,20 @@ test("reviewBody wraps the comment in a bold heading over the same spend footer"
 test("reviewBody trims the comment and rejects an empty one", () => {
   assert.match(reviewBody("  ship it  ", usage), /\*\*🔍 Strappy code review\*\*\n\nship it\n\n---/);
   assert.throws(() => reviewBody("   ", usage), /comment is required/);
+});
+
+// ---- updateBody (the pushed-update reply posted on the PR) -------------------
+
+test("updateBody wraps the summary in a pushed-update heading over the same spend footer", () => {
+  assert.equal(
+    updateBody("Squashed that edge case. 💅", usage),
+    "**🔧 Strappy pushed an update**\n\nSquashed that edge case. 💅\n\n---\n🤖 Strappy · meta-llama/llama-3.3-70b-instruct\nLLM cost: $0.0234 · 12,304 in / 1,872 out tokens",
+  );
+});
+
+test("updateBody trims the summary and rejects an empty one", () => {
+  assert.match(updateBody("  done  ", usage), /\*\*🔧 Strappy pushed an update\*\*\n\ndone\n\n---/);
+  assert.throws(() => updateBody("   ", usage), /summary is required/);
 });
 
 // ---- promptCheckComment (the verdict posted on the issue, pass or fail) ------

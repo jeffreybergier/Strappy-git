@@ -12,9 +12,10 @@ import { apiRouter } from "./routes/api.js";
 import { createGitHubClient } from "./github/client.js";
 import { sessionsDir } from "./llm/pi.js";
 import { githubStepKinds, githubCleanup } from "./jobs/githubKinds.js";
-import { TriggerPoller, issueSource, pullRequestSource } from "./github/poller.js";
+import { TriggerPoller, issueSource, pullRequestSource, pullRequestReplySource } from "./github/poller.js";
 import { processIssueJob } from "./jobs/processIssueJob.js";
 import { processPullRequestJob } from "./jobs/processPullRequestJob.js";
+import { processPullRequestCommentJob } from "./jobs/processPullRequestCommentJob.js";
 
 const log = createLogger("Server");
 
@@ -46,9 +47,9 @@ function warnIfNoKey(): void {
   );
 }
 
-// Starts the trigger poller (new issues + new same-repo PRs) when a token is set
-// (repos are auto-discovered). An empty whitelist is allowed but warned
-// (fail-closed: it would act for nobody).
+// Starts the trigger poller (new issues, new same-repo PRs, and whitelisted
+// replies on same-repo PRs) when a token is set (repos are auto-discovered). An
+// empty whitelist is allowed but warned (fail-closed: it would act for nobody).
 function startPoller(store: SqliteJobStore): void {
   const token = process.env[config.github.tokenEnv];
   if (token === undefined || token.trim() === "") {
@@ -71,9 +72,12 @@ function startPoller(store: SqliteJobStore): void {
     store,
     registry: githubStepKinds(deps),
     cleanup: githubCleanup(deps),
+    // Order matters for PRs sharing one ledger row: the review watcher claims a
+    // PR at creation first, so the reply watcher only ever fires on later comments.
     watchers: [
-      { job: processIssueJob(), source: issueSource(client) },
-      { job: processPullRequestJob(), source: pullRequestSource(client) },
+      { job: processIssueJob(), source: issueSource(client), activation: "creation-or-comment" },
+      { job: processPullRequestJob(), source: pullRequestSource(client), activation: "creation" },
+      { job: processPullRequestCommentJob(), source: pullRequestReplySource(client), activation: "comment" },
     ],
     whitelist: config.github.userWhitelist,
     intervalMs: config.github.pollIntervalMs,

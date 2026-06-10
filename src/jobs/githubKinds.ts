@@ -50,6 +50,7 @@ export function githubStepKinds(deps: GitHubKindDeps): StepKindRegistry {
     .register("git.commitPush", (ctx) => commitPush(deps, ctx))
     .register("github.openPullRequest", (ctx) => openPullRequest(deps, ctx))
     .register("github.commentPr", (ctx) => commentPullRequest(deps, ctx))
+    .register("github.commentUpdate", (ctx) => commentUpdate(deps, ctx))
     .register("github.closeIssue", (ctx) => closeIssue(deps, ctx));
 }
 
@@ -87,9 +88,12 @@ async function fetchPullRequest(deps: GitHubKindDeps, ctx: StepContext): Promise
   return { userPrompt: buildPrompt(pr.title, pr.body, comments) };
 }
 
+// Also returns the branch as newBranch so the reply job's commit/push step can
+// consume it; the review job declares neither, so the extra key is dropped.
 async function checkoutPullRequestBranch(deps: GitHubKindDeps, ctx: StepContext): Promise<StepValues> {
-  await git.checkoutBranch(str(ctx.inputs, "workingDirectory"), str(ctx.inputs, "prBranch"), deps.token);
-  return { checkedOut: true };
+  const branch = str(ctx.inputs, "prBranch");
+  await git.checkoutBranch(str(ctx.inputs, "workingDirectory"), branch, deps.token);
+  return { checkedOut: true, newBranch: branch };
 }
 
 async function cloneRepo(deps: GitHubKindDeps, ctx: StepContext): Promise<StepValues> {
@@ -172,6 +176,13 @@ export function reviewBody(comment: string, usage: PrUsage): string {
   return `**🔍 Strappy code review**\n\n${comment.trim()}\n\n${usageFooter(usage)}`;
 }
 
+// The implement model's own account of the update it just pushed, posted as the
+// PR reply that closes the loop on a comment-triggered run; same spend footer.
+export function updateBody(summary: string, usage: PrUsage): string {
+  if (typeof summary !== "string" || summary.trim() === "") throw new Error("[githubKinds.updateBody] summary is required");
+  return `**🔧 Strappy pushed an update**\n\n${summary.trim()}\n\n${usageFooter(usage)}`;
+}
+
 // The prompt-check verdict comment: a bold "Prompt Check Passed/Failed" heading
 // (our static-heading convention — bold, not a `#` heading), a horizontal rule,
 // then the guard model's own voiced reason as pure markdown (it renders — no code
@@ -218,14 +229,35 @@ async function commentPullRequest(deps: GitHubKindDeps, ctx: StepContext): Promi
   return { commentId };
 }
 
-// Posts the "Prompt Check Passed" verdict on the issue once it clears. Only
-// reached on the safe path — an unsafe verdict throws in the security step, and
-// the poller posts the matching "Prompt Check Failed" comment instead.
+// Posts the "Prompt Check Passed" verdict on the issue or PR once it clears.
+// Only reached on the safe path — an unsafe verdict throws in the security step,
+// and the poller posts the matching "Prompt Check Failed" comment instead.
 async function commentSecurity(deps: GitHubKindDeps, ctx: StepContext): Promise<StepValues> {
   const commentId = await deps.client.commentOnIssue(
     str(ctx.inputs, "repo"),
-    num(ctx.inputs, "issueNumber"),
+    targetNumber(ctx.inputs),
     promptCheckComment(true, str(ctx.inputs, "securityReason")),
+  );
+  return { commentId };
+}
+
+// The comment target: the issue job seeds issueNumber, the PR jobs seed prNumber
+// (a PR is an issue to the comment API, so both post the same way).
+function targetNumber(inputs: StepValues): number {
+  return num(inputs, inputs["prNumber"] !== undefined ? "prNumber" : "issueNumber");
+}
+
+// Posts the pushed-update summary as a PR reply (commentOnIssue serves PRs too).
+async function commentUpdate(deps: GitHubKindDeps, ctx: StepContext): Promise<StepValues> {
+  const commentId = await deps.client.commentOnIssue(
+    str(ctx.inputs, "repo"),
+    num(ctx.inputs, "prNumber"),
+    updateBody(str(ctx.inputs, "updateSummary"), {
+      model: str(ctx.inputs, "model"),
+      cost: num(ctx.inputs, "cost"),
+      inputTokens: num(ctx.inputs, "inputTokens"),
+      outputTokens: num(ctx.inputs, "outputTokens"),
+    }),
   );
   return { commentId };
 }

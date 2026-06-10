@@ -14,6 +14,12 @@ test("triggerInputs returns the declared contract for the PR trigger", () => {
   assert.ok(inputs.every((io) => io.source === "trigger"));
 });
 
+test("triggerInputs returns the declared contract for the PR-reply trigger", () => {
+  const inputs = triggerInputs("github.pull_request.commented");
+  assert.deepEqual(inputs.map((io) => io.key), ["repo", "prNumber", "prAuthor", "prBranch", "jobUuid"]);
+  assert.ok(inputs.every((io) => io.source === "trigger"));
+});
+
 test("triggerInputs returns [] for an unregistered trigger", () => {
   assert.deepEqual(triggerInputs("manual"), []);
 });

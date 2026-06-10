@@ -1,6 +1,7 @@
 import type { StepIO } from "./types.js";
 import { issueTriggerInputs } from "./processIssueJob.js";
 import { pullRequestTriggerInputs } from "./processPullRequestJob.js";
+import { pullRequestCommentTriggerInputs } from "./processPullRequestCommentJob.js";
 
 // Maps a Job.trigger to the typed values the poller seeds onto the bus, so the
 // dashboard can render the trigger as the process map's first producer. This is
@@ -10,6 +11,7 @@ import { pullRequestTriggerInputs } from "./processPullRequestJob.js";
 const TRIGGER_INPUTS: Record<string, () => StepIO[]> = {
   "github.issue.opened": issueTriggerInputs,
   "github.pull_request.opened": pullRequestTriggerInputs,
+  "github.pull_request.commented": pullRequestCommentTriggerInputs,
 };
 
 export function triggerInputs(trigger: string): StepIO[] {
