@@ -86,15 +86,22 @@ export function uuidStem(jobUuid: string): string {
 }
 
 // The clone is shallow AND single-branch (--depth 1 implies --single-branch), so
-// a PR's head branch is not in the clone: fetch it explicitly (still shallow),
-// then check FETCH_HEAD out as a local branch of the same name. origin/HEAD keeps
-// tracking the base branch, so the review diff (origin/HEAD..HEAD) still holds.
-export async function checkoutBranch(workdir: string, branch: string, token: string): Promise<void> {
+// a PR's base and head branches may not be in the clone. Fetch the real PR base
+// into origin/<base>, point origin/HEAD at it, then fetch and check out the head.
+// The review/update diff stays stable as origin/HEAD..HEAD even for PRs whose
+// base is not the repo default branch.
+export async function checkoutBranch(workdir: string, branch: string, baseBranch: string, token: string): Promise<void> {
   if (typeof branch !== "string" || branch.trim() === "") throw new Error("[Git.checkoutBranch] branch is required");
+  if (typeof baseBranch !== "string" || baseBranch.trim() === "") throw new Error("[Git.checkoutBranch] baseBranch is required");
   const header = authHeader(token);
+  await runGit([
+    "-C", workdir, "-c", header, "fetch", "--depth", "1", "origin",
+    `refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}`,
+  ], { secrets: [token, header] });
+  await runGit(["-C", workdir, "remote", "set-head", "origin", baseBranch]);
   await runGit(["-C", workdir, "-c", header, "fetch", "--depth", "1", "origin", branch], { secrets: [token, header] });
   await runGit(["-C", workdir, "checkout", "-b", branch, "FETCH_HEAD"]);
-  log.info("checkoutBranch", `checked out ${branch}`);
+  log.info("checkoutBranch", `checked out ${branch} against ${baseBranch}`);
 }
 
 export async function createBranch(workdir: string, branch: string): Promise<void> {

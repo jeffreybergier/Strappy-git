@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { TriggerPoller, issueSource, pullRequestSource, pullRequestReplySource, isReviewablePullRequest, isSameRepoPullRequest, isAllowedAuthor, isPushProtected, formatRunId, failureNote, failureComment, attemptedSummary, failureOutputKeys, RETRY_EPILOGUE, CLOSED_EPILOGUE } from "./poller.js";
+import { TriggerPoller, issueSource, pullRequestSource, pullRequestReplySource, isReviewablePullRequest, isSameRepoPullRequest, isAllowedAuthor, isPushProtected, formatRunId, failureNote, failureComment, attemptedSummary, failureOutputKeys, failureStateLine, hasCodeSideEffects, RETRY_EPILOGUE, CLOSED_EPILOGUE, LEFT_OPEN_EPILOGUE } from "./poller.js";
 import type { Watcher } from "./poller.js";
 import type { GitHubClient, IssueComment, IssueRef, PullRequestRef } from "./client.js";
 import { openDatabase } from "../jobs/db.js";
@@ -58,9 +58,9 @@ function issue(repo: string, number: number, author: string): IssueRef {
   return { repo, number, author, title: `t${number}`, body: "", createdAt: "2030-01-01T00:00:00.000Z" };
 }
 
-// A same-repo PR by default; pass headRepo to simulate a fork.
-function pr(repo: string, number: number, author: string, headRef = `feature/${number}`, headRepo = repo): PullRequestRef {
-  return { repo, number, author, title: `t${number}`, body: "", headRef, headRepo, createdAt: "2030-01-01T00:00:00.000Z" };
+// A same-repo PR targeting main by default; pass headRepo to simulate a fork.
+function pr(repo: string, number: number, author: string, headRef = `feature/${number}`, headRepo = repo, baseRef = "main"): PullRequestRef {
+  return { repo, number, author, title: `t${number}`, body: "", headRef, headRepo, baseRef, createdAt: "2030-01-01T00:00:00.000Z" };
 }
 
 interface CapturedComment { repo: string; issueNumber: number; body: string; }
@@ -181,6 +181,63 @@ function boomRegistry(): StepKindRegistry {
   return new StepKindRegistry().register("boom", () => {
     throw new Error("model did not call submit_implement_issue");
   });
+}
+
+function pushedThenFailsJob(): Job {
+  return {
+    id: "process-issue",
+    name: "Process New Issue",
+    description: "Pushes before a later failure.",
+    trigger: "github.issue.opened",
+    steps: [
+      {
+        id: "commit-push",
+        kind: "push",
+        name: "Commit & Push",
+        description: "Records that code was pushed.",
+        inputs: [],
+        outputs: [
+          { key: "pushed", type: "boolean", source: "receipt", description: "Pushed" },
+          { key: "newBranch", type: "string", source: "step", description: "Branch" },
+        ],
+      },
+      { id: "comment-pr", kind: "boom", name: "Comment PR", description: "Fails later.", inputs: [], outputs: [] },
+    ],
+    failureHandler: failureHandler(),
+  };
+}
+
+function openedPrThenFailsJob(): Job {
+  return {
+    id: "process-issue",
+    name: "Process New Issue",
+    description: "Opens a PR before a later failure.",
+    trigger: "github.issue.opened",
+    steps: [
+      {
+        id: "open-pr",
+        kind: "open",
+        name: "Open Pull Request",
+        description: "Records the opened PR.",
+        inputs: [],
+        outputs: [
+          { key: "prNumber", type: "number", source: "step", description: "PR number" },
+          { key: "prUrl", type: "string", source: "receipt", description: "PR URL" },
+        ],
+      },
+      { id: "review", kind: "boom", name: "Review", description: "Fails later.", inputs: [], outputs: [] },
+    ],
+    failureHandler: failureHandler(),
+  };
+}
+
+function sideEffectRegistry(): StepKindRegistry {
+  return new StepKindRegistry()
+    .register("push", () => ({ pushed: true, newBranch: "strappy/issue-19/abcd1234" }))
+    .register("open", () => ({ prNumber: 42, prUrl: "https://github.com/o/r/pull/42" }))
+    .register("boom", () => {
+      throw new Error("review comment failed");
+    });
 }
 
 test("poller enqueues and processes a whitelisted user's new issue", async () => {
@@ -335,6 +392,34 @@ test("a failed issue run closes the issue as not planned", async () => {
   assert.doesNotMatch(comments[0]?.body ?? "", /re-runs the job/, "and no longer promises a retry-by-reply");
 });
 
+test("a failed issue run is not closed as failed after code was pushed", async () => {
+  const { store, poller, comments, closed } = setup(
+    { "o/r": [issue("o/r", 19, "jeffreybergier")] },
+    { job: pushedThenFailsJob(), registry: sideEffectRegistry() },
+  );
+  await poller.tick();
+  await poller.whenIdle();
+  assert.equal(store.listRuns()[0]?.status, "failed");
+  assert.equal(closed.length, 0, "an issue with pushed code stays open for human follow-up");
+  assert.match(comments[0]?.body ?? "", /Code was pushed to branch `strappy\/issue-19\/abcd1234` before this failure/);
+  assert.doesNotMatch(comments[0]?.body ?? "", /No code was pushed/);
+  assert.match(comments[0]?.body ?? "", /left open because code was already pushed/);
+  assert.doesNotMatch(comments[0]?.body ?? "", /now closed as failed/);
+});
+
+test("a failed issue run is not closed as failed after a PR was opened", async () => {
+  const { store, poller, comments, closed } = setup(
+    { "o/r": [issue("o/r", 22, "jeffreybergier")] },
+    { job: openedPrThenFailsJob(), registry: sideEffectRegistry() },
+  );
+  await poller.tick();
+  await poller.whenIdle();
+  assert.equal(store.listRuns()[0]?.status, "failed");
+  assert.equal(closed.length, 0, "an issue with an open PR is not closed not_planned");
+  assert.match(comments[0]?.body ?? "", /Code was pushed and PR #42 \(https:\/\/github.com\/o\/r\/pull\/42\) was opened before this failure/);
+  assert.match(comments[0]?.body ?? "", /left open because code was already pushed/);
+});
+
 test("a successful issue run never hits the failure-close path", async () => {
   const { store, poller, closed } = setup({ "o/r": [issue("o/r", 14, "jeffreybergier")] });
   await poller.tick();
@@ -366,13 +451,15 @@ test("isSameRepoPullRequest accepts strappy/ branches (the reply job fixes Strap
 });
 
 test("poller enqueues and processes a whitelisted user's same-repo PR", async () => {
-  const { store, poller } = setup({}, { prs: { "o/r": [pr("o/r", 8, "jeffreybergier")] } });
+  const { store, poller } = setup({}, { prs: { "o/r": [pr("o/r", 8, "jeffreybergier", "feature/8", "o/r", "release/1.2")] } });
   await poller.tick();
   await poller.whenIdle();
   assert.equal(store.isProcessed("o/r", 8), true);
   assert.equal(store.listRuns().length, 1);
   assert.equal(store.listRuns()[0]?.status, "succeeded");
   assert.match(store.listRuns()[0]?.id ?? "", /^o\/r#8\/process-pull-request\/[0-9a-f]{8}$/);
+  const checkout = store.listRuns()[0]?.stepRuns.find((s) => s.stepId === "checkout-branch");
+  assert.equal(checkout?.inputs?.["baseBranch"], "release/1.2");
 });
 
 test("poller ignores a PR opened from a fork", async () => {
@@ -587,13 +674,36 @@ test("failureComment leads with a bold heading and embeds the error in a verbati
   assert.match(body, /^\*\*⚠️ Job failed\*\*\n\n---\n\n/);
   assert.match(body, /o\/r#9\/process-issue\/abc/);
   assert.match(body, /```\nmodel did not call submit_implement_issue\n```/);
-  assert.match(body, /Nothing was pushed/);
+  assert.match(body, /No code was pushed/);
 });
 
 test("failureComment throws on empty args", () => {
   assert.throws(() => failureComment("", "boom"), /runId must be a non-empty string/);
   assert.throws(() => failureComment("run", ""), /detail must be a non-empty string/);
   assert.throws(() => failureComment("run", "boom", null, "  "), /epilogue must be a non-empty string/);
+  assert.throws(() => failureComment("run", "boom", null, RETRY_EPILOGUE, "  "), /stateLine must be a non-empty string/);
+});
+
+test("failureStateLine reports pushed branches and opened PRs from recorded receipts", () => {
+  const pushed = failedRun([
+    { stepId: "commit-push", status: "succeeded", outputs: { pushed: true, newBranch: "strappy/issue-1/abc" } },
+    { stepId: "comment-pr", status: "failed", note: "boom" },
+  ]);
+  assert.equal(hasCodeSideEffects(pushed), true);
+  assert.equal(failureStateLine(pushed), "Code was pushed to branch `strappy/issue-1/abc` before this failure, but a later step did not complete.");
+
+  const opened = failedRun([
+    { stepId: "open-pr", status: "succeeded", outputs: { prNumber: 42, prUrl: "https://github.com/o/r/pull/42" } },
+    { stepId: "review", status: "failed", note: "boom" },
+  ]);
+  assert.equal(hasCodeSideEffects(opened), true);
+  assert.equal(failureStateLine(opened), "Code was pushed and PR #42 (https://github.com/o/r/pull/42) was opened before this failure.");
+});
+
+test("failureStateLine defaults to no code pushed before side effects", () => {
+  const run = failedRun([{ stepId: "security-scan", status: "failed", note: "blocked" }]);
+  assert.equal(hasCodeSideEffects(run), false);
+  assert.equal(failureStateLine(run), "No code was pushed.");
 });
 
 test("failureComment defaults to the retry-by-reply epilogue (PR threads)", () => {
@@ -605,6 +715,13 @@ test("failureComment takes the closed-as-failed epilogue for one-shot issue runs
   const body = failureComment("run", "boom", null, CLOSED_EPILOGUE);
   assert.ok(body.endsWith(CLOSED_EPILOGUE));
   assert.doesNotMatch(body, /re-runs the job/);
+});
+
+test("failureComment can take the left-open epilogue when code side effects exist", () => {
+  const body = failureComment("run", "boom", null, LEFT_OPEN_EPILOGUE, "Code was pushed before this failure.");
+  assert.ok(body.endsWith(LEFT_OPEN_EPILOGUE));
+  assert.match(body, /Code was pushed before this failure/);
+  assert.doesNotMatch(body, /now closed as failed/);
 });
 
 test("failureComment appends the model's summary under an attributed header, markdown intact (not fenced)", () => {

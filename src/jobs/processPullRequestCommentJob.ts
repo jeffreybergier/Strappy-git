@@ -19,6 +19,7 @@ export function pullRequestCommentTriggerInputs(): StepIO[] {
     io("prNumber", "number", "trigger", "Pull request number"),
     io("prAuthor", "string", "trigger", "GitHub login that opened the pull request (not whitelist-gated)"),
     io("prBranch", "string", "trigger", "Head branch of the pull request (a branch in this repo, never a fork)"),
+    io("baseBranch", "string", "trigger", "Base branch the pull request targets"),
     io("jobUuid", "string", "trigger", "Per-job UUID"),
   ];
 }
@@ -73,9 +74,10 @@ export function processPullRequestCommentJob(): Job {
         [io("workingDirectory", "string", "step", "Local clone path"),
           io("userPrompt", "string", "pass", "Carried to the update step")]),
       step("checkout-branch", "git.checkoutBranch", "Checkout PR Branch",
-        "Fetch the PR head branch into the shallow clone and check it out — the branch the model edits and the push targets.",
+        "Fetch the PR base/head branches into the shallow clone and check the head out — the branch the model edits and the push targets.",
         [io("workingDirectory", "string", "pass", "Local clone path; used here and carried to the update step"),
           io("prBranch", "string", "trigger", "Head branch to check out"),
+          io("baseBranch", "string", "trigger", "Base branch the PR targets"),
           io("userPrompt", "string", "pass", "Carried to the update step")],
         [io("newBranch", "string", "step", "The checked-out PR head branch, carried on to the commit/push step"),
           io("workingDirectory", "string", "pass", "Carried to the update step"),

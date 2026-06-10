@@ -23,6 +23,8 @@ export interface OpenPrInput {
 // One open pull request. `headRef` is the head branch name and `headRepo` the
 // full name of the repo that branch lives in ("" when the head repo was
 // deleted) — together they let the poller reject fork PRs before any work runs.
+// `baseRef` is the actual PR target branch, which can differ from the default
+// branch and must be the review/update diff base.
 export interface PullRequestRef {
   repo: string;
   number: number;
@@ -31,6 +33,7 @@ export interface PullRequestRef {
   body: string;
   headRef: string;
   headRepo: string;
+  baseRef: string;
   createdAt: string;
 }
 
@@ -143,13 +146,13 @@ async function listOpenPullRequests(octokit: Octokit, repo: string): Promise<Pul
 
 function toPullRequestRef(
   repo: string,
-  pr: { number: number; user: { login: string } | null; title: string; body?: string | null; created_at: string; head: { ref: string; repo: { full_name: string } | null } },
+  pr: { number: number; user: { login: string } | null; title: string; body?: string | null; created_at: string; head: { ref: string; repo: { full_name: string } | null }; base: { ref: string } },
 ): PullRequestRef {
   const author = pr.user?.login;
   if (author === undefined) throw new Error(`[GitHub.toPullRequestRef] PR #${pr.number} has no author`);
   return {
     repo, number: pr.number, author, title: pr.title, body: pr.body ?? "",
-    headRef: pr.head.ref, headRepo: pr.head.repo?.full_name ?? "", createdAt: pr.created_at,
+    headRef: pr.head.ref, headRepo: pr.head.repo?.full_name ?? "", baseRef: pr.base.ref, createdAt: pr.created_at,
   };
 }
 

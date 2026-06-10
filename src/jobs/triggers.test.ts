@@ -10,13 +10,13 @@ test("triggerInputs returns the declared contract for a known trigger", () => {
 
 test("triggerInputs returns the declared contract for the PR trigger", () => {
   const inputs = triggerInputs("github.pull_request.opened");
-  assert.deepEqual(inputs.map((io) => io.key), ["repo", "prNumber", "prAuthor", "prBranch", "jobUuid"]);
+  assert.deepEqual(inputs.map((io) => io.key), ["repo", "prNumber", "prAuthor", "prBranch", "baseBranch", "jobUuid"]);
   assert.ok(inputs.every((io) => io.source === "trigger"));
 });
 
 test("triggerInputs returns the declared contract for the PR-reply trigger", () => {
   const inputs = triggerInputs("github.pull_request.commented");
-  assert.deepEqual(inputs.map((io) => io.key), ["repo", "prNumber", "prAuthor", "prBranch", "jobUuid"]);
+  assert.deepEqual(inputs.map((io) => io.key), ["repo", "prNumber", "prAuthor", "prBranch", "baseBranch", "jobUuid"]);
   assert.ok(inputs.every((io) => io.source === "trigger"));
 });
 

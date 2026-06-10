@@ -92,7 +92,7 @@ async function fetchPullRequest(deps: GitHubKindDeps, ctx: StepContext): Promise
 // consume it; the review job declares neither, so the extra key is dropped.
 async function checkoutPullRequestBranch(deps: GitHubKindDeps, ctx: StepContext): Promise<StepValues> {
   const branch = str(ctx.inputs, "prBranch");
-  await git.checkoutBranch(str(ctx.inputs, "workingDirectory"), branch, deps.token);
+  await git.checkoutBranch(str(ctx.inputs, "workingDirectory"), branch, str(ctx.inputs, "baseBranch"), deps.token);
   return { checkedOut: true, newBranch: branch };
 }
 

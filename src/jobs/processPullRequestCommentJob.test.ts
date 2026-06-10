@@ -6,7 +6,14 @@ import { processPullRequestCommentJob } from "./processPullRequestCommentJob.js"
 import { openDatabase } from "./db.js";
 import { SqliteJobStore } from "./sqliteStore.js";
 
-const trigger = { repo: "owner/repo", prNumber: 21, prAuthor: "coworker", prBranch: "strappy/issue-3/8e6e2f89", jobUuid: "uuid-1" };
+const trigger = {
+  repo: "owner/repo",
+  prNumber: 21,
+  prAuthor: "coworker",
+  prBranch: "strappy/issue-3/8e6e2f89",
+  baseBranch: "release/1.2",
+  jobUuid: "uuid-1",
+};
 
 test("processPullRequestCommentJob runs end-to-end through stub kinds (no creds, no mutations)", async () => {
   const job = processPullRequestCommentJob();

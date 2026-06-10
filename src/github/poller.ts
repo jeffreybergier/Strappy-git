@@ -43,9 +43,10 @@ const ACTIVATIONS: readonly Activation[] = ["creation", "comment", "creation-or-
 
 // A job bound to the trigger source that fires it. The poller runs any number of
 // watchers over the same repo discovery, ledger, and sequential queue, so runs
-// from different processes still execute one at a time. closeOnFailure makes a
-// failed run terminal: after the failure comment the issue is closed as
-// not_planned, so it leaves the open-issue feed and nothing re-triggers it
+// from different processes still execute one at a time. closeOnFailure makes an
+// early failed run terminal: after the failure comment the issue is closed as
+// not_planned, so it leaves the open-issue feed and nothing re-triggers it. If
+// code was already pushed or a PR was opened, the issue stays open instead
 // (issues only — never set it on a PR watcher, closeIssue would close the PR).
 export interface Watcher {
   job: Job;
@@ -73,7 +74,7 @@ export function issueSource(client: GitHubClient): TriggerSource {
 // in THIS repo can be checked out or pushed to — a fork's branch is outside the
 // trust boundary (and headRepo is "" when the fork was deleted, which also fails).
 export function isSameRepoPullRequest(pr: PullRequestRef): boolean {
-  if (!pr || typeof pr.headRepo !== "string" || typeof pr.headRef !== "string") {
+  if (!pr || typeof pr.headRepo !== "string" || typeof pr.headRef !== "string" || typeof pr.baseRef !== "string") {
     throw new Error("[Poller.isSameRepoPullRequest] pr must be a PullRequestRef");
   }
   return pr.headRepo === pr.repo;
@@ -116,7 +117,7 @@ function triggerItem(pr: PullRequestRef): TriggerItem {
     repo: pr.repo,
     number: pr.number,
     author: pr.author,
-    inputs: { repo: pr.repo, prNumber: pr.number, prAuthor: pr.author, prBranch: pr.headRef },
+    inputs: { repo: pr.repo, prNumber: pr.number, prAuthor: pr.author, prBranch: pr.headRef, baseBranch: pr.baseRef },
   };
 }
 
@@ -163,12 +164,15 @@ export function failureNote(run: JobRun): string {
 
 // The closing line of a failure comment — what happens next. RETRY_EPILOGUE is
 // for comment-retriggerable threads (PRs: a whitelisted reply runs the update
-// job); CLOSED_EPILOGUE is for one-shot issue runs, where the harness closes the
-// issue as failed and no reply will ever re-trigger it.
+// job); CLOSED_EPILOGUE is for one-shot issue runs that failed before code side
+// effects; LEFT_OPEN_EPILOGUE is for issue runs that already pushed code or
+// opened a PR, so closing them as not planned would be misleading.
 export const RETRY_EPILOGUE =
   "This is an automatic report from the harness. To retry, reply here — a comment from a whitelisted user re-runs the job on the whole thread.";
 export const CLOSED_EPILOGUE =
   "This is an automatic report from the harness. This issue is now closed as failed; replies here will not re-run the job. To retry, open a new issue.";
+export const LEFT_OPEN_EPILOGUE =
+  "This is an automatic report from the harness. This issue was left open because code was already pushed or a PR was opened; replies here will not re-run the issue job. Continue on the PR or branch, or open a new issue to retry from scratch.";
 
 // The issue comment posted when a generic job step fails (not the prompt check —
 // that gets its own promptCheckComment). The harness frame is fixed, plain text —
@@ -177,9 +181,15 @@ export const CLOSED_EPILOGUE =
 // technical message, not markdown). When the model spoke before the failure, its
 // own recorded PR summary is appended verbatim under an attributed header (its
 // genuine words, never synthesized) so a human learns what it set out to do.
-// States nothing was pushed and what happens next (the epilogue), so a human
-// knows what happened.
-export function failureComment(runId: string, detail: string, summary?: string | null, epilogue: string = RETRY_EPILOGUE): string {
+// States what side effects already happened and what happens next (the epilogue),
+// so a human knows whether there is code or a PR to inspect.
+export function failureComment(
+  runId: string,
+  detail: string,
+  summary?: string | null,
+  epilogue: string = RETRY_EPILOGUE,
+  stateLine: string = "No code was pushed.",
+): string {
   if (typeof runId !== "string" || runId.trim() === "") {
     throw new Error("[Poller.failureComment] runId must be a non-empty string");
   }
@@ -189,12 +199,15 @@ export function failureComment(runId: string, detail: string, summary?: string |
   if (typeof epilogue !== "string" || epilogue.trim() === "") {
     throw new Error("[Poller.failureComment] epilogue must be a non-empty string");
   }
+  if (typeof stateLine !== "string" || stateLine.trim() === "") {
+    throw new Error("[Poller.failureComment] stateLine must be a non-empty string");
+  }
   const lines = [
     "**⚠️ Job failed**",
     "",
     "---",
     "",
-    `Nothing was pushed. Run \`${runId}\` failed with:`,
+    `${stateLine.trim()} Run \`${runId}\` failed with:`,
     "",
     "```",
     detail.trim(),
@@ -235,6 +248,68 @@ export function attemptedSummary(run: JobRun, keys: readonly string[]): string |
     if (summary !== null) return summary;
   }
   return null;
+}
+
+export interface FailureSideEffects {
+  pushed: boolean;
+  branch: string | null;
+  openedPrNumber: number | null;
+  openedPrUrl: string | null;
+}
+
+// Reads completed side-effect receipts from the recorded run. Only outputs count
+// for PR creation, so a PR job's trigger prNumber is not mistaken for a PR opened
+// by this run.
+export function failureSideEffects(run: JobRun): FailureSideEffects {
+  if (run === null || typeof run !== "object" || !Array.isArray(run.stepRuns)) {
+    throw new Error("[Poller.failureSideEffects] run must be a JobRun");
+  }
+  const effects: FailureSideEffects = { pushed: false, branch: null, openedPrNumber: null, openedPrUrl: null };
+  for (const step of run.stepRuns) collectSideEffects(step, effects);
+  return effects;
+}
+
+export function hasCodeSideEffects(run: JobRun): boolean {
+  const effects = failureSideEffects(run);
+  return effects.pushed || effects.openedPrNumber !== null;
+}
+
+export function failureStateLine(run: JobRun): string {
+  const effects = failureSideEffects(run);
+  if (effects.openedPrNumber !== null) {
+    const link = effects.openedPrUrl === null ? "" : ` (${effects.openedPrUrl})`;
+    return `Code was pushed and PR #${effects.openedPrNumber}${link} was opened before this failure.`;
+  }
+  if (effects.pushed) {
+    const target = effects.branch === null ? "" : ` to branch \`${effects.branch}\``;
+    return `Code was pushed${target} before this failure, but a later step did not complete.`;
+  }
+  return "No code was pushed.";
+}
+
+function collectSideEffects(step: StepRun, effects: FailureSideEffects): void {
+  if (step.inputs !== undefined && effects.branch === null) {
+    const branch = stringValue(step.inputs, "newBranch");
+    if (branch !== null) effects.branch = branch;
+  }
+  if (step.outputs === undefined) return;
+  if (step.outputs["pushed"] === true) effects.pushed = true;
+  const branch = stringValue(step.outputs, "newBranch");
+  if (branch !== null) effects.branch = branch;
+  const prNumber = numberValue(step.outputs, "prNumber");
+  if (prNumber !== null) effects.openedPrNumber = prNumber;
+  const prUrl = stringValue(step.outputs, "prUrl");
+  if (prUrl !== null) effects.openedPrUrl = prUrl;
+}
+
+function stringValue(values: StepValues, key: string): string | null {
+  const value = values[key];
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+}
+
+function numberValue(values: StepValues, key: string): number | null {
+  const value = values[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function summaryOf(step: StepRun, keys: readonly string[]): string | null {
@@ -467,7 +542,7 @@ export class TriggerPoller {
       );
       this.store.setStatus(repo, number, item.runId, run.status);
       log.info("run", `${repo}#${number} -> ${run.status} (${item.runId})`);
-      if (run.status === "failed") await this.reportFailure(item, this.failureBody(item, run));
+      if (run.status === "failed") await this.reportFailure(item, this.failureBody(item, run), run);
     } catch (error) {
       this.store.setStatus(repo, number, item.runId, "failed");
       log.error("run", `${repo}#${number} crashed`, error);
@@ -476,14 +551,25 @@ export class TriggerPoller {
   }
 
   // Every failure surfaces the same way: comment first, then — for a one-shot
-  // watcher — close the issue as failed so it leaves the open feed for good.
-  private async reportFailure(item: QueueItem, body: string): Promise<void> {
+  // watcher with no code side effects — close the issue as failed so it leaves
+  // the open feed for good.
+  private async reportFailure(item: QueueItem, body: string, run?: JobRun): Promise<void> {
     await this.postComment(item, body);
-    if (item.closeOnFailure) await this.closeAsFailed(item);
+    if (this.shouldCloseAsFailed(item, run)) await this.closeAsFailed(item);
+  }
+
+  private shouldCloseAsFailed(item: QueueItem, run?: JobRun): boolean {
+    if (!item.closeOnFailure) return false;
+    return run === undefined || !hasCodeSideEffects(run);
   }
 
   private epilogue(item: QueueItem): string {
     return item.closeOnFailure ? CLOSED_EPILOGUE : RETRY_EPILOGUE;
+  }
+
+  private failureEpilogue(item: QueueItem, run: JobRun): string {
+    if (!item.closeOnFailure) return RETRY_EPILOGUE;
+    return hasCodeSideEffects(run) ? LEFT_OPEN_EPILOGUE : CLOSED_EPILOGUE;
   }
 
   // Best-effort, like postComment: a close failure is logged, never thrown. The
@@ -504,7 +590,13 @@ export class TriggerPoller {
   private failureBody(item: QueueItem, run: JobRun): string {
     const rejection = this.promptCheckRejection(item.job, run);
     if (rejection !== null) return promptCheckComment(false, rejection);
-    return failureComment(item.runId, failureNote(run), attemptedSummary(run, failureOutputKeys(item.job)), this.epilogue(item));
+    return failureComment(
+      item.runId,
+      failureNote(run),
+      attemptedSummary(run, failureOutputKeys(item.job)),
+      this.failureEpilogue(item, run),
+      failureStateLine(run),
+    );
   }
 
   // The guard model's voiced reason when THIS run failed at the security gate, or

@@ -23,7 +23,7 @@ export function failureHandler(numberKey: string = "issueNumber"): FailureHandle
   return {
     id: "post-failure-comment",
     name: "Post Failure Comment",
-    description: "On any step failure, comment the outcome back on the issue (nothing was pushed) so a human sees it.",
+    description: "On any step failure, comment the outcome back on the issue or PR so a human sees it.",
     inputs: [
       io("repo", "string", "trigger", "owner/name — addresses the comment"),
       io(numberKey, "number", "trigger", "Issue or pull request the comment is posted on"),

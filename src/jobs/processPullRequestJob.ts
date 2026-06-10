@@ -19,6 +19,7 @@ export function pullRequestTriggerInputs(): StepIO[] {
     io("prNumber", "number", "trigger", "Pull request number"),
     io("prAuthor", "string", "trigger", "GitHub login that opened the pull request"),
     io("prBranch", "string", "trigger", "Head branch of the pull request (a branch in this repo, never a fork)"),
+    io("baseBranch", "string", "trigger", "Base branch the pull request targets"),
     io("jobUuid", "string", "trigger", "Per-job UUID"),
   ];
 }
@@ -32,9 +33,10 @@ function step(
 
 // The PR twin of process-issue's tail: when a whitelisted user opens a PR from a
 // same-repo branch, fetch the PR's title/description/thread (the review user
-// message), clone the repo, check the PR head branch out (the shallow clone is
-// single-branch, so it is fetched explicitly), run the SAME llm.review kind over
-// it — it inspects the diff (git diff origin/HEAD..HEAD), runs the tests/program,
+// message), clone the repo, check the PR head branch out against its real base
+// branch (the shallow clone is single-branch, so both refs are fetched
+// explicitly), run the SAME llm.review kind over it — it inspects the diff
+// (git diff origin/HEAD..HEAD), runs the tests/program,
 // and authors a review — then post that review (with a spend footer) on the PR
 // via the same github.commentPr kind the issue job ends with. Nothing is edited,
 // committed, or pushed. Each step reads only ambient trigger constants, its own
@@ -59,9 +61,10 @@ export function processPullRequestJob(): Job {
         [io("workingDirectory", "string", "step", "Local clone path"),
           io("userPrompt", "string", "pass", "Carried to the review step")]),
       step("checkout-branch", "git.checkoutBranch", "Checkout PR Branch",
-        "Fetch the PR head branch into the shallow clone and check it out, so the diff under review is origin/HEAD..HEAD.",
+        "Fetch the PR base/head branches into the shallow clone and check the head out, so the diff under review is origin/HEAD..HEAD.",
         [io("workingDirectory", "string", "pass", "Local clone path; used here and carried to the review step"),
           io("prBranch", "string", "trigger", "Head branch to check out"),
+          io("baseBranch", "string", "trigger", "Base branch the PR targets"),
           io("userPrompt", "string", "pass", "Carried to the review step")],
         [io("checkedOut", "boolean", "receipt", "Terminal: the PR head branch is checked out"),
           io("workingDirectory", "string", "pass", "Carried to the review step"),
