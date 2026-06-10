@@ -7,9 +7,13 @@ inside the image.)
 
 ## What this project is
 
-A Node.js + TypeScript web server that watches GitHub repos for new issues from
-whitelisted users, then runs **ISO 9001-inspired job process
-maps** (steps with explicit, typed inputs and outputs) backed by an LLM.
+A Node.js + TypeScript web server that watches GitHub repos for new issues and
+new same-repo pull requests from whitelisted users, then runs **ISO
+9001-inspired job process maps** (steps with explicit, typed inputs and
+outputs) backed by an LLM. Two processes exist today: **process-issue**
+(implement a new issue, open a PR, review it) and **process-pull-request**
+(review a whitelisted user's PR — only when its head branch lives in the same
+repo, never a fork — and post the verdict as a PR comment).
 
 LLM access goes through **[pi.dev](https://pi.dev)** (the `@earendil-works/pi-*`
 packages, used as an **SDK / library — not the CLI**) talking to
@@ -124,28 +128,42 @@ Copy `.env.example` → `.env` (the repo `.gitignore` ignores `.env`, keeps
 ```
 config/models.json     OpenRouter provider + model declarations (pi.dev format)
 compose.yml            Docker services: altivec-intelligence, shell, serve, test
+prompts/               static step system prompts: implement-issue, code-review,
+                       review-pull-request, security-check, personality
 src/
   config.ts            strict env loading (throws on missing/invalid)
   logger.ts            namespaced logger -> [Scope.method]
-  server.ts            Express bootstrap; binds config.host:config.port
+  server.ts            Express bootstrap; wires store + TriggerPoller watchers
+  github/
+    client.ts          Octokit wrapper (issues, PRs, comments, branch rules)
+    git.ts             shallow clone/branch/checkout/commit/push (token redacted)
+    poller.ts          TriggerPoller: watchers (job + trigger source) over one
+                       ledger + sequential queue; issueSource / pullRequestSource
   jobs/
     types.ts           ISO 9001 types: Job, ProcessStep, StepIO, JobRun, StepRun
-    seed.ts            process-issue job registry + empty seed runs
-    store.ts           in-memory JobStore + JobReadStore interface
-    store.test.ts      JobStore tests
+    processIssueJob.ts        the process-issue job graph + issue trigger contract
+    processPullRequestJob.ts  the process-pull-request job graph + PR trigger contract
+    failureHandler.ts  shared failure-comment contract (numberKey: issue vs PR)
+    triggers.ts        trigger id -> trigger StepIO contract (dashboard)
+    seed.ts            job registry (both processes) + empty seed runs
+    scheduler.ts       runJob: two-scope value threading, run recording
+    stepKinds.ts       StepKindRegistry + stubs for every kind
+    githubKinds.ts     live registry: git/GitHub/LLM-backed step executors
+    llmKind.ts         llm step kind (Pi runStructured + derived outputs)
+    securityKind.ts    security.scan step kind (prompt-injection gate)
+    validateJobGraph.ts / validateJobRegistry.ts  static contract checks
+    store.ts           in-memory JobStore + JobReadStore/TriggerLedger interfaces
     schema.ts          SQLite DDL (jobs, process_steps, step_io, *_runs)
-    db.ts              node:sqlite data-access: open/seed/read/insert
-    sqliteStore.ts     SqliteJobStore (JobReadStore + saveJob/recordRun)
-    sqliteStore.test.ts  SqliteJobStore round-trip tests (in-memory db)
+    db.ts              node:sqlite data-access: open/seed/sync/read/insert
+    sqliteStore.ts     SqliteJobStore (JobReadStore + saveJob/recordRun + ledger)
   routes/
     dashboard.ts       GET /  (server-rendered EJS)
     api.ts             GET /api/jobs|/api/jobs/:id|/api/runs (JSON)
   llm/
-    pi.ts              pi.dev + OpenRouter integration (runPrompt) — the LLM seam
-  config.test.ts       requireOpenRouterKey tests
-  logger.test.ts       createLogger tests
+    pi.ts              pi.dev + OpenRouter integration (runStructured) — the LLM seam
 views/dashboard.ejs    Bootstrap 3 (CDN) dashboard rendering the process maps
 ```
+(`*.test.ts` siblings cover each module; tests use Node's built-in runner.)
 
 ## The ISO 9001 process-map model
 
@@ -175,7 +193,9 @@ into later inputs and persists live/final run state through `SqliteJobStore`.
 ## Verified working
 
 - `npm install` clean; `npm run typecheck` clean (incl. `*.test.ts`).
-- `npm test` → 221 passing.
+- `npm test` → 242 passing.
+- The poller's PR listing (`listOpenPullRequests`) verified live read-only
+  against the real repos (returned 0 open PRs; nothing mutated).
 - Dashboard boots, binds `0.0.0.0:3000`, `GET /` returns 200, renders the
   seeded process maps **served from SQLite**; `GET /api/jobs` / `/api/runs`
   return JSON hydrated from `data/strappy.sqlite` (auto-created + seeded; the

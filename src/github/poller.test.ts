@@ -1,12 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { IssuePoller, isAllowedAuthor, isPushProtected, formatRunId, failureNote, failureComment, attemptedSummary, failureOutputKeys } from "./poller.js";
-import type { GitHubClient, IssueComment, IssueRef } from "./client.js";
+import { TriggerPoller, issueSource, pullRequestSource, isReviewablePullRequest, isAllowedAuthor, isPushProtected, formatRunId, failureNote, failureComment, attemptedSummary, failureOutputKeys } from "./poller.js";
+import type { Watcher } from "./poller.js";
+import type { GitHubClient, IssueComment, IssueRef, PullRequestRef } from "./client.js";
 import { openDatabase } from "../jobs/db.js";
 import { SqliteJobStore } from "../jobs/sqliteStore.js";
 import { StepKindRegistry, stubExecutor } from "../jobs/stepKinds.js";
 import { llmDerivableKeys } from "../jobs/llmKind.js";
 import { processIssueJob } from "../jobs/processIssueJob.js";
+import { processPullRequestJob } from "../jobs/processPullRequestJob.js";
 import { failureHandler } from "../jobs/failureHandler.js";
 import type { Job, JobRun } from "../jobs/types.js";
 
@@ -49,10 +51,15 @@ test("formatRunId throws on invalid args", () => {
   assert.throws(() => formatRunId("o/r", 1, "p", ""), /jobUuid must be a non-empty string/);
 });
 
-// ---- IssuePoller (ledger-only dedupe + sequential queue, no network) --------
+// ---- TriggerPoller (ledger-only dedupe + sequential queue, no network) ------
 
 function issue(repo: string, number: number, author: string): IssueRef {
   return { repo, number, author, title: `t${number}`, body: "", createdAt: "2030-01-01T00:00:00.000Z" };
+}
+
+// A same-repo PR by default; pass headRepo to simulate a fork.
+function pr(repo: string, number: number, author: string, headRef = `feature/${number}`, headRepo = repo): PullRequestRef {
+  return { repo, number, author, title: `t${number}`, body: "", headRef, headRepo, createdAt: "2030-01-01T00:00:00.000Z" };
 }
 
 interface CapturedComment { repo: string; issueNumber: number; body: string; }
@@ -74,10 +81,11 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 // listComments reads the inbound thread; commentOnIssue records into the outbound
 // sink so failure-reporting is asserted. The remaining methods satisfy the
 // interface but are never called under the stub registry.
-function fakeClient(issuesByRepo: Record<string, IssueRef[]>, posted: CapturedComment[], thread: Thread): GitHubClient {
+function fakeClient(issuesByRepo: Record<string, IssueRef[]>, posted: CapturedComment[], thread: Thread, prsByRepo: Record<string, PullRequestRef[]> = {}): GitHubClient {
   return {
-    listAccessibleRepos: async () => Object.keys(issuesByRepo),
+    listAccessibleRepos: async () => [...new Set([...Object.keys(issuesByRepo), ...Object.keys(prsByRepo)])],
     listOpenIssues: async (repo) => issuesByRepo[repo] ?? [],
+    listOpenPullRequests: async (repo) => prsByRepo[repo] ?? [],
     getIssue: async () => { throw new Error("getIssue not used in stub run"); },
     listComments: async (repo, issueNumber) => thread[`${repo}#${issueNumber}`] ?? [],
     getDefaultBranch: async () => "main",
@@ -94,6 +102,8 @@ interface SetupOpts {
   registry?: StepKindRegistry;
   thread?: Thread;
   listBranchRules?: GitHubClient["listBranchRules"];
+  // Open PRs by repo; providing them adds a process-pull-request watcher.
+  prs?: Record<string, PullRequestRef[]>;
 }
 
 function setup(issuesByRepo: Record<string, IssueRef[]>, opts: SetupOpts = {}) {
@@ -103,25 +113,31 @@ function setup(issuesByRepo: Record<string, IssueRef[]>, opts: SetupOpts = {}) {
   store.saveJob(job);
   const comments: CapturedComment[] = [];
   const thread = opts.thread ?? {};
-  const client = { ...fakeClient(issuesByRepo, comments, thread), ...(opts.listBranchRules && { listBranchRules: opts.listBranchRules }) };
-  const poller = new IssuePoller({
+  const client = { ...fakeClient(issuesByRepo, comments, thread, opts.prs ?? {}), ...(opts.listBranchRules && { listBranchRules: opts.listBranchRules }) };
+  const watchers: Watcher[] = [{ job, source: issueSource(client) }];
+  if (opts.prs !== undefined) {
+    const prJob = processPullRequestJob();
+    store.saveJob(prJob);
+    watchers.push({ job: prJob, source: pullRequestSource(client) });
+  }
+  const poller = new TriggerPoller({
     client,
     store,
-    registry: opts.registry ?? stubRegistryForJob(job),
-    job,
+    registry: opts.registry ?? stubRegistryForJobs(watchers.map((w) => w.job)),
+    watchers,
     whitelist: opts.whitelist ?? ["jeffreybergier"],
     intervalMs: 1000,
   });
   return { store, poller, comments, thread };
 }
 
-// Stub registry that backs the real processIssueJob in tests: every kind it uses,
-// run as a stub, with the llm kinds declaring their derivers so the poller's
-// strict-init validateJobRegistry check passes (production wires githubStepKinds,
-// which declares the same derivers).
-function stubRegistryForJob(job: Job): StepKindRegistry {
+// Stub registry that backs the real jobs in tests: every kind they use, run as a
+// stub, with the llm kinds declaring their derivers so the poller's strict-init
+// validateJobRegistry check passes (production wires githubStepKinds, which
+// declares the same derivers).
+function stubRegistryForJobs(jobs: Job[]): StepKindRegistry {
   const registry = new StepKindRegistry();
-  for (const kind of new Set(job.steps.map((s) => s.kind))) {
+  for (const kind of new Set(jobs.flatMap((job) => job.steps.map((s) => s.kind)))) {
     const caps = kind === "llm" || kind === "llm.review" ? { derivableKeys: llmDerivableKeys() } : undefined;
     registry.register(kind, stubExecutor, caps);
   }
@@ -195,6 +211,7 @@ test("overlapping ticks join the in-flight scan instead of enqueueing twice", as
   const client: GitHubClient = {
     listAccessibleRepos: async () => { repoLists += 1; return ["o/r"]; },
     listOpenIssues: async () => [issue("o/r", 31, "jeffreybergier")],
+    listOpenPullRequests: async () => [],
     getIssue: async () => { throw new Error("getIssue not used in stub run"); },
     listComments: async () => {
       commentLists += 1;
@@ -208,11 +225,11 @@ test("overlapping ticks join the in-flight scan instead of enqueueing twice", as
     commentOnIssue: async () => 1,
     closeIssue: async () => {},
   };
-  const poller = new IssuePoller({
+  const poller = new TriggerPoller({
     client,
     store,
-    registry: stubRegistryForJob(job),
-    job,
+    registry: stubRegistryForJobs([job]),
+    watchers: [{ job, source: issueSource(client) }],
     whitelist: ["jeffreybergier"],
     intervalMs: 1000,
   });
@@ -320,6 +337,75 @@ test("a non-whitelisted reply does not re-trigger, no matter who posts", async (
   await poller.tick();
   await poller.whenIdle();
   assert.equal(store.listRuns().length, 1, "an outsider's comment never raises the watermark");
+});
+
+// ---- pull-request watcher (same-repo PRs reviewed via the shared queue) -----
+
+test("isReviewablePullRequest accepts a same-repo branch and rejects forks", () => {
+  assert.equal(isReviewablePullRequest(pr("o/r", 1, "u", "feature/x", "o/r")), true);
+  assert.equal(isReviewablePullRequest(pr("o/r", 1, "u", "feature/x", "fork-owner/r")), false);
+  assert.equal(isReviewablePullRequest(pr("o/r", 1, "u", "feature/x", "")), false); // deleted head repo
+});
+
+test("isReviewablePullRequest rejects Strappy's own strappy/ branches", () => {
+  assert.equal(isReviewablePullRequest(pr("o/r", 1, "u", "strappy/issue-3/8e6e2f89")), false);
+});
+
+test("isReviewablePullRequest throws on a non-PullRequestRef", () => {
+  assert.throws(() => isReviewablePullRequest(null as never), /pr must be a PullRequestRef/);
+});
+
+test("poller enqueues and processes a whitelisted user's same-repo PR", async () => {
+  const { store, poller } = setup({}, { prs: { "o/r": [pr("o/r", 8, "jeffreybergier")] } });
+  await poller.tick();
+  await poller.whenIdle();
+  assert.equal(store.isProcessed("o/r", 8), true);
+  assert.equal(store.listRuns().length, 1);
+  assert.equal(store.listRuns()[0]?.status, "succeeded");
+  assert.match(store.listRuns()[0]?.id ?? "", /^o\/r#8\/process-pull-request\/[0-9a-f]{8}$/);
+});
+
+test("poller ignores a PR opened from a fork", async () => {
+  const { store, poller } = setup({}, { prs: { "o/r": [pr("o/r", 9, "jeffreybergier", "feature/x", "fork-owner/r")] } });
+  await poller.tick();
+  await poller.whenIdle();
+  assert.equal(store.isProcessed("o/r", 9), false);
+  assert.equal(store.listRuns().length, 0);
+});
+
+test("poller ignores a PR from a non-whitelisted user", async () => {
+  const { store, poller } = setup({}, { prs: { "o/r": [pr("o/r", 10, "attacker")] } });
+  await poller.tick();
+  await poller.whenIdle();
+  assert.equal(store.isProcessed("o/r", 10), false);
+  assert.equal(store.listRuns().length, 0);
+});
+
+test("issues and PRs run through one shared poller, ledger, and queue", async () => {
+  const { store, poller } = setup(
+    { "o/r": [issue("o/r", 1, "jeffreybergier")] },
+    { prs: { "o/r": [pr("o/r", 2, "jeffreybergier")] } },
+  );
+  await poller.tick();
+  await poller.whenIdle();
+  assert.equal(store.listRuns().length, 2);
+  const ids = store.listRuns().map((r) => r.id).sort();
+  assert.match(ids[0] ?? "", /^o\/r#1\/process-issue\//);
+  assert.match(ids[1] ?? "", /^o\/r#2\/process-pull-request\//);
+  assert.ok(store.listRuns().every((r) => r.status === "succeeded"));
+});
+
+test("a whitelisted reply on a reviewed PR re-triggers a fresh review", async () => {
+  const thread: Thread = {};
+  const { store, poller } = setup({}, { prs: { "o/r": [pr("o/r", 12, "jeffreybergier")] }, thread });
+  await poller.tick();
+  await poller.whenIdle();
+  assert.equal(store.listRuns().length, 1, "the new PR runs once");
+  thread["o/r#12"] = [comment(6, "jeffreybergier", "pushed fixes, look again")];
+  await poller.tick();
+  await poller.whenIdle();
+  assert.equal(store.listRuns().length, 2, "the reply re-triggers exactly one re-run");
+  assert.equal(store.lastProcessedComment("o/r", 12), 6, "and the watermark advances to it");
 });
 
 // ---- branch-protection check (advisory: warn per tick, never block) ---------

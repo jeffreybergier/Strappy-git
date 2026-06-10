@@ -22,6 +22,17 @@ test("failureHandler inputs only ever source 'trigger' or 'failure' (the termina
   }
 });
 
+test("failureHandler addresses the comment by the given number key (the PR job passes prNumber)", () => {
+  const byKey = Object.fromEntries(failureHandler("prNumber").inputs.map((io) => [io.key, io]));
+  assert.equal(byKey["prNumber"]?.source, "trigger");
+  assert.equal(byKey["prNumber"]?.type, "number");
+  assert.equal(byKey["issueNumber"], undefined);
+});
+
+test("failureHandler throws on a blank number key", () => {
+  assert.throws(() => failureHandler(""), /numberKey must be a non-empty string/);
+});
+
 test("failureHandler returns a fresh object each call (no shared mutable state)", () => {
   assert.notEqual(failureHandler(), failureHandler());
   assert.deepEqual(failureHandler(), failureHandler());

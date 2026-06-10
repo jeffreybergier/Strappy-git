@@ -9,7 +9,7 @@ function io(key: string, type: IoType, source: IoSource, description: string, gu
 }
 
 // The values the poller seeds onto the run for a github.issue.opened trigger
-// (see IssuePoller.runItem). Declared as a typed, ambient contract (every step
+// (see poller.issueSource). Declared as a typed, ambient contract (every step
 // may read these without threading them) so validateJobGraph can prove the
 // steps' "trigger" inputs resolve. issueAuthor is gated at the poller
 // (isAllowedAuthor) and seeded here for traceability, though no step reads it.
@@ -29,8 +29,9 @@ function step(
   return { id, kind, name, description, ...(systemPrompt !== undefined && { systemPrompt }), inputs, outputs };
 }
 
-// Model-facing guidance for the review step's one authored output.
-const REVIEW_GUIDANCE =
+// Model-facing guidance for the review step's one authored output. Exported so
+// processPullRequestJob's review step (the same llm.review kind) shares it.
+export const REVIEW_GUIDANCE =
   "Your code review as a single markdown comment, posted verbatim on the pull request. " +
   "Lead with a short verdict (approve / needs work), then the concrete findings " +
   "(correctness, missing or stale tests, anything risky) with file references, then a note " +

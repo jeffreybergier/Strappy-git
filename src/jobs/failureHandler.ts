@@ -13,14 +13,20 @@ function io(key: string, type: IoType, source: IoSource, description: string): S
 // facts read off the failed run. "guaranteed" facts are present on every failure;
 // attemptedSummary is best-effort — only populated once an earlier step recorded
 // the model's PR summary (a failure before the model speaks omits it).
-export function failureHandler(): FailureHandler {
+// numberKey names the trigger constant carrying the comment target's number
+// ("issueNumber" for the issue job, "prNumber" for the PR job — a PR is an
+// issue to GitHub's comment API, so the posting path is identical).
+export function failureHandler(numberKey: string = "issueNumber"): FailureHandler {
+  if (typeof numberKey !== "string" || numberKey.trim() === "") {
+    throw new Error("[failureHandler] numberKey must be a non-empty string");
+  }
   return {
     id: "post-failure-comment",
     name: "Post Failure Comment",
     description: "On any step failure, comment the outcome back on the issue (nothing was pushed) so a human sees it.",
     inputs: [
       io("repo", "string", "trigger", "owner/name — addresses the comment"),
-      io("issueNumber", "number", "trigger", "Issue to comment on"),
+      io(numberKey, "number", "trigger", "Issue or pull request the comment is posted on"),
       io("failedStep", "string", "failure", "Id of the step that failed"),
       io("errorNote", "string", "failure", "The failed step's recorded error message (fenced in the comment)"),
       io("runId", "string", "failure", "The run id, shown in the comment"),

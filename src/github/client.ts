@@ -20,6 +20,20 @@ export interface OpenPrInput {
   body: string;
 }
 
+// One open pull request. `headRef` is the head branch name and `headRepo` the
+// full name of the repo that branch lives in ("" when the head repo was
+// deleted) — together they let the poller reject fork PRs before any work runs.
+export interface PullRequestRef {
+  repo: string;
+  number: number;
+  author: string;
+  title: string;
+  body: string;
+  headRef: string;
+  headRepo: string;
+  createdAt: string;
+}
+
 // One issue comment. `id` is GitHub's monotonically-increasing comment id, used
 // as the poller's re-trigger watermark; `author` gates whether it can trigger.
 export interface IssueComment {
@@ -32,6 +46,7 @@ export interface IssueComment {
 export interface GitHubClient {
   listAccessibleRepos(): Promise<string[]>;
   listOpenIssues(repo: string): Promise<IssueRef[]>;
+  listOpenPullRequests(repo: string): Promise<PullRequestRef[]>;
   getIssue(repo: string, issueNumber: number): Promise<IssueRef>;
   listComments(repo: string, issueNumber: number): Promise<IssueComment[]>;
   getDefaultBranch(repo: string): Promise<string>;
@@ -59,6 +74,7 @@ export function createGitHubClient(token: string): GitHubClient {
   return {
     listAccessibleRepos: () => listAccessibleRepos(octokit),
     listOpenIssues: (repo) => listOpenIssues(octokit, repo),
+    listOpenPullRequests: (repo) => listOpenPullRequests(octokit, repo),
     getIssue: (repo, n) => getIssue(octokit, repo, n),
     listComments: (repo, n) => listComments(octokit, repo, n),
     getDefaultBranch: (repo) => getDefaultBranch(octokit, repo),
@@ -104,6 +120,33 @@ function toIssueRef(repo: string, i: { number: number; user: { login: string } |
   const author = i.user?.login;
   if (author === undefined) throw new Error(`[GitHub.toIssueRef] issue #${i.number} has no author`);
   return { repo, number: i.number, author, title: i.title, body: i.body ?? "", createdAt: i.created_at };
+}
+
+// Open PRs only; the same-repo (non-fork) policy is applied by the caller
+// (poller.isReviewablePullRequest), so this stays a faithful API read.
+async function listOpenPullRequests(octokit: Octokit, repo: string): Promise<PullRequestRef[]> {
+  const { owner, name } = parseRepo(repo);
+  try {
+    const res = await octokit.pulls.list({
+      owner, repo: name, state: "open", sort: "created", direction: "desc", per_page: 50,
+    });
+    return res.data.map((pr) => toPullRequestRef(repo, pr));
+  } catch (error) {
+    log.error("listOpenPullRequests", `failed for ${repo}`, error);
+    throw error;
+  }
+}
+
+function toPullRequestRef(
+  repo: string,
+  pr: { number: number; user: { login: string } | null; title: string; body?: string | null; created_at: string; head: { ref: string; repo: { full_name: string } | null } },
+): PullRequestRef {
+  const author = pr.user?.login;
+  if (author === undefined) throw new Error(`[GitHub.toPullRequestRef] PR #${pr.number} has no author`);
+  return {
+    repo, number: pr.number, author, title: pr.title, body: pr.body ?? "",
+    headRef: pr.head.ref, headRepo: pr.head.repo?.full_name ?? "", createdAt: pr.created_at,
+  };
 }
 
 async function getIssue(octokit: Octokit, repo: string, issueNumber: number): Promise<IssueRef> {

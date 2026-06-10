@@ -39,10 +39,12 @@ export function githubStepKinds(deps: GitHubKindDeps): StepKindRegistry {
   validateDeps(deps);
   return new StepKindRegistry()
     .register("github.fetchIssue", (ctx) => fetchIssue(deps, ctx))
+    .register("github.fetchPullRequest", (ctx) => fetchPullRequest(deps, ctx))
     .register("security.scan", securityStepKind())
     .register("github.commentSecurity", (ctx) => commentSecurity(deps, ctx))
     .register("git.cloneRepo", (ctx) => cloneRepo(deps, ctx))
     .register("git.createBranch", (ctx) => createBranch(ctx))
+    .register("git.checkoutBranch", (ctx) => checkoutPullRequestBranch(deps, ctx))
     .register("llm", llmStepKind(), { derivableKeys: llmDerivableKeys() })
     .register("llm.review", llmStepKind(undefined, deps.reviewModel), { derivableKeys: llmDerivableKeys() })
     .register("git.commitPush", (ctx) => commitPush(deps, ctx))
@@ -72,6 +74,22 @@ export function buildPrompt(title: string, body: string, comments: IssueComment[
   if (comments.length === 0) return head;
   const thread = comments.map((c) => `@${c.author}: ${c.body.trim()}`).join("\n\n");
   return `${head}\n\n--- Comments ---\n\n${thread}`;
+}
+
+// GitHub models a PR as an issue, so the issue read APIs fetch the PR's title,
+// description, and comment thread; buildPrompt renders them the same way it
+// renders an issue, into the review step's user message.
+async function fetchPullRequest(deps: GitHubKindDeps, ctx: StepContext): Promise<StepValues> {
+  const repo = str(ctx.inputs, "repo");
+  const prNumber = num(ctx.inputs, "prNumber");
+  const pr = await deps.client.getIssue(repo, prNumber);
+  const comments = await deps.client.listComments(repo, prNumber);
+  return { userPrompt: buildPrompt(pr.title, pr.body, comments) };
+}
+
+async function checkoutPullRequestBranch(deps: GitHubKindDeps, ctx: StepContext): Promise<StepValues> {
+  await git.checkoutBranch(str(ctx.inputs, "workingDirectory"), str(ctx.inputs, "prBranch"), deps.token);
+  return { checkedOut: true };
 }
 
 async function cloneRepo(deps: GitHubKindDeps, ctx: StepContext): Promise<StepValues> {

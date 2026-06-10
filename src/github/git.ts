@@ -85,6 +85,18 @@ export function uuidStem(jobUuid: string): string {
   return jobUuid.split("-")[0] ?? jobUuid;
 }
 
+// The clone is shallow AND single-branch (--depth 1 implies --single-branch), so
+// a PR's head branch is not in the clone: fetch it explicitly (still shallow),
+// then check FETCH_HEAD out as a local branch of the same name. origin/HEAD keeps
+// tracking the base branch, so the review diff (origin/HEAD..HEAD) still holds.
+export async function checkoutBranch(workdir: string, branch: string, token: string): Promise<void> {
+  if (typeof branch !== "string" || branch.trim() === "") throw new Error("[Git.checkoutBranch] branch is required");
+  const header = authHeader(token);
+  await runGit(["-C", workdir, "-c", header, "fetch", "--depth", "1", "origin", branch], { secrets: [token, header] });
+  await runGit(["-C", workdir, "checkout", "-b", branch, "FETCH_HEAD"]);
+  log.info("checkoutBranch", `checked out ${branch}`);
+}
+
 export async function createBranch(workdir: string, branch: string): Promise<void> {
   await runGit(["-C", workdir, "checkout", "-b", branch]);
   log.info("createBranch", `created ${branch}`);

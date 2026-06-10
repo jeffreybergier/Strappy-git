@@ -12,8 +12,9 @@ import { apiRouter } from "./routes/api.js";
 import { createGitHubClient } from "./github/client.js";
 import { sessionsDir } from "./llm/pi.js";
 import { githubStepKinds, githubCleanup } from "./jobs/githubKinds.js";
-import { IssuePoller } from "./github/poller.js";
+import { TriggerPoller, issueSource, pullRequestSource } from "./github/poller.js";
 import { processIssueJob } from "./jobs/processIssueJob.js";
+import { processPullRequestJob } from "./jobs/processPullRequestJob.js";
 
 const log = createLogger("Server");
 
@@ -45,12 +46,13 @@ function warnIfNoKey(): void {
   );
 }
 
-// Starts the issue poller when a token is set (repos are auto-discovered). An
-// empty whitelist is allowed but warned (fail-closed: it would act for nobody).
+// Starts the trigger poller (new issues + new same-repo PRs) when a token is set
+// (repos are auto-discovered). An empty whitelist is allowed but warned
+// (fail-closed: it would act for nobody).
 function startPoller(store: SqliteJobStore): void {
   const token = process.env[config.github.tokenEnv];
   if (token === undefined || token.trim() === "") {
-    log.warn("startPoller", `${config.github.tokenEnv} not set — issue poller disabled`);
+    log.warn("startPoller", `${config.github.tokenEnv} not set — trigger poller disabled`);
     return;
   }
   if (config.github.userWhitelist.length === 0) {
@@ -64,12 +66,15 @@ function startPoller(store: SqliteJobStore): void {
     committer: { name: config.github.committerName, email: config.github.committerEmail },
     reviewModel: config.openRouter.reviewModel,
   };
-  new IssuePoller({
+  new TriggerPoller({
     client,
     store,
     registry: githubStepKinds(deps),
     cleanup: githubCleanup(deps),
-    job: processIssueJob(),
+    watchers: [
+      { job: processIssueJob(), source: issueSource(client) },
+      { job: processPullRequestJob(), source: pullRequestSource(client) },
+    ],
     whitelist: config.github.userWhitelist,
     intervalMs: config.github.pollIntervalMs,
   }).start();

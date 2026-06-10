@@ -9,9 +9,79 @@ import { promptCheckComment } from "../jobs/githubKinds.js";
 import type { JobWriteStore, TriggerLedger } from "../jobs/store.js";
 import type { Job, JobRun, StepRun } from "../jobs/types.js";
 import { uuidStem } from "./git.js";
-import type { GitHubClient, IssueRef } from "./client.js";
+import type { GitHubClient, PullRequestRef } from "./client.js";
 
 const log = createLogger("Poller");
+
+// One poll-able trigger candidate, shaped independently of issues vs PRs:
+// (repo, number) keys the ledger and addresses comments (GitHub numbers issues
+// and PRs from one sequence, and a PR is an issue to the comment API), author
+// gates the whitelist, and inputs are the ambient trigger constants the job's
+// steps read — everything except the per-run jobUuid, which the poller mints.
+export interface TriggerItem {
+  repo: string;
+  number: number;
+  author: string;
+  inputs: StepValues;
+}
+
+// Where a watcher's candidates come from (open issues, open PRs, ...). `name`
+// labels log lines only.
+export interface TriggerSource {
+  name: string;
+  list(repo: string): Promise<TriggerItem[]>;
+}
+
+// A job bound to the trigger source that fires it. The poller runs any number of
+// watchers over the same repo discovery, ledger, and sequential queue, so runs
+// from different processes still execute one at a time.
+export interface Watcher {
+  job: Job;
+  source: TriggerSource;
+}
+
+// Adapts the open-issue feed to the generic poller; inputs mirror
+// processIssueJob.issueTriggerInputs.
+export function issueSource(client: GitHubClient): TriggerSource {
+  if (!client) throw new Error("[Poller.issueSource] client is required");
+  return {
+    name: "issue(s)",
+    list: async (repo) => (await client.listOpenIssues(repo)).map((issue) => ({
+      repo: issue.repo,
+      number: issue.number,
+      author: issue.author,
+      inputs: { repo: issue.repo, issueNumber: issue.number, issueAuthor: issue.author },
+    })),
+  };
+}
+
+// Same-repo gate for the PR job: only a PR whose head branch lives in THIS repo
+// is reviewable — a fork's branch is outside the trust boundary (and headRepo is
+// "" when the fork was deleted, which also fails). Strappy's own strappy/...
+// branches are excluded too: the issue job already reviews the PRs it opens.
+export function isReviewablePullRequest(pr: PullRequestRef): boolean {
+  if (!pr || typeof pr.headRepo !== "string" || typeof pr.headRef !== "string") {
+    throw new Error("[Poller.isReviewablePullRequest] pr must be a PullRequestRef");
+  }
+  return pr.headRepo === pr.repo && !pr.headRef.startsWith("strappy/");
+}
+
+// Adapts the open-PR feed to the generic poller; inputs mirror
+// processPullRequestJob.pullRequestTriggerInputs.
+export function pullRequestSource(client: GitHubClient): TriggerSource {
+  if (!client) throw new Error("[Poller.pullRequestSource] client is required");
+  return {
+    name: "pull request(s)",
+    list: async (repo) => (await client.listOpenPullRequests(repo))
+      .filter((pr) => isReviewablePullRequest(pr))
+      .map((pr) => ({
+        repo: pr.repo,
+        number: pr.number,
+        author: pr.author,
+        inputs: { repo: pr.repo, prNumber: pr.number, prAuthor: pr.author, prBranch: pr.headRef },
+      })),
+  };
+}
 
 // Security gate: only whitelisted GitHub users may trigger Strappy. Fails
 // closed — an empty whitelist authorizes nobody. GitHub logins are
@@ -130,34 +200,34 @@ function message(error: unknown): string {
 }
 
 interface QueueItem {
-  repo: string;
-  issueNumber: number;
-  issueAuthor: string;
+  job: Job;
+  trigger: TriggerItem;
   jobUuid: string;
   runId: string;
 }
 
-export interface IssuePollerDeps {
+export interface TriggerPollerDeps {
   client: GitHubClient;
   store: JobWriteStore & TriggerLedger;
   registry: StepKindRegistry;
-  job: Job;
+  watchers: Watcher[];
   whitelist: readonly string[];
   intervalMs: number;
   // Teardown handed to the scheduler; removes the run's clone workspace.
   cleanup?: (triggerInputs: StepValues) => Promise<void> | void;
 }
 
-// Watches auto-discovered repos for new issues. The whole "should we act?"
-// decision is the SQLite ledger: if there is no row for (repo, issue) and the
-// author is whitelisted, the issue is claimed in the ledger and pushed onto a
-// queue that runs jobs one at a time — so a boot that finds a 10-issue backlog
-// processes them sequentially, not all at once.
-export class IssuePoller {
+// Watches auto-discovered repos for each watcher's trigger items (new issues,
+// new same-repo PRs). The whole "should we act?" decision is the SQLite ledger:
+// if there is no row for (repo, number) and the author is whitelisted, the item
+// is claimed in the ledger and pushed onto a queue that runs jobs one at a time
+// — so a boot that finds a 10-issue backlog processes them sequentially, not
+// all at once.
+export class TriggerPoller {
   private readonly client: GitHubClient;
   private readonly store: JobWriteStore & TriggerLedger;
   private readonly registry: StepKindRegistry;
-  private readonly job: Job;
+  private readonly watchers: Watcher[];
   private readonly whitelist: readonly string[];
   private readonly intervalMs: number;
   private readonly cleanup?: (triggerInputs: StepValues) => Promise<void> | void;
@@ -165,32 +235,39 @@ export class IssuePoller {
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking: Promise<void> | null = null;
 
-  constructor(deps: IssuePollerDeps) {
-    if (!deps || !deps.client) throw new Error("[IssuePoller] client is required");
-    if (!deps.store) throw new Error("[IssuePoller] store is required");
-    if (!(deps.registry instanceof StepKindRegistry)) throw new Error("[IssuePoller] registry is required");
-    if (!deps.job) throw new Error("[IssuePoller] job is required");
-    if (!Array.isArray(deps.whitelist)) throw new Error("[IssuePoller] whitelist must be an array");
+  constructor(deps: TriggerPollerDeps) {
+    if (!deps || !deps.client) throw new Error("[TriggerPoller] client is required");
+    if (!deps.store) throw new Error("[TriggerPoller] store is required");
+    if (!(deps.registry instanceof StepKindRegistry)) throw new Error("[TriggerPoller] registry is required");
+    if (!Array.isArray(deps.watchers) || deps.watchers.length === 0) {
+      throw new Error("[TriggerPoller] watchers must be a non-empty array");
+    }
+    for (const watcher of deps.watchers) {
+      if (!watcher || !watcher.job || !watcher.source) throw new Error("[TriggerPoller] each watcher needs a job and a source");
+    }
+    if (!Array.isArray(deps.whitelist)) throw new Error("[TriggerPoller] whitelist must be an array");
     if (!Number.isInteger(deps.intervalMs) || deps.intervalMs <= 0) {
-      throw new Error("[IssuePoller] intervalMs must be a positive integer");
+      throw new Error("[TriggerPoller] intervalMs must be a positive integer");
     }
     if (deps.cleanup !== undefined && typeof deps.cleanup !== "function") {
-      throw new Error("[IssuePoller] cleanup must be a function");
+      throw new Error("[TriggerPoller] cleanup must be a function");
     }
     this.client = deps.client;
     this.store = deps.store;
     this.registry = deps.registry;
-    this.job = deps.job;
+    this.watchers = deps.watchers;
     this.whitelist = deps.whitelist;
     this.intervalMs = deps.intervalMs;
     this.cleanup = deps.cleanup;
-    validateJobRegistry(this.job, this.registry); // strict init: this registry must be able to run the job's contract
+    // Strict init: this registry must be able to run every watched job's contract.
+    for (const watcher of this.watchers) validateJobRegistry(watcher.job, this.registry);
     this.queue = new SequentialQueue((item) => this.runItem(item));
   }
 
   start(): void {
-    if (this.timer !== null) throw new Error("[IssuePoller.start] already started");
-    log.info("start", `watching auto-discovered repos every ${this.intervalMs}ms; whitelist=[${this.whitelist.join(",")}]`);
+    if (this.timer !== null) throw new Error("[TriggerPoller.start] already started");
+    const jobs = this.watchers.map((w) => w.job.id).join(",");
+    log.info("start", `watching auto-discovered repos every ${this.intervalMs}ms; jobs=[${jobs}]; whitelist=[${this.whitelist.join(",")}]`);
     this.timer = setInterval(() => void this.tick(), this.intervalMs);
     this.timer.unref();
     void this.tick();
@@ -235,12 +312,17 @@ export class IssuePoller {
 
   private async pollRepo(repo: string): Promise<void> {
     await this.warnIfUnprotected(repo);
+    for (const watcher of this.watchers) await this.pollWatcher(repo, watcher);
+  }
+
+  // One watcher's failure (e.g. the PR list call) never blocks the others.
+  private async pollWatcher(repo: string, watcher: Watcher): Promise<void> {
     try {
-      const issues = await this.client.listOpenIssues(repo);
-      log.info("pollRepo", `${repo}: ${issues.length} open issue(s)`);
-      for (const issue of issues) await this.maybeEnqueue(issue);
+      const items = await watcher.source.list(repo);
+      log.info("pollRepo", `${repo}: ${items.length} open ${watcher.source.name}`);
+      for (const item of items) await this.maybeEnqueue(watcher.job, item);
     } catch (error) {
-      log.error("pollRepo", `failed for ${repo}`, error);
+      log.error("pollRepo", `${watcher.source.name} failed for ${repo}`, error);
     }
   }
 
@@ -261,40 +343,41 @@ export class IssuePoller {
   // Enqueue at most one job per never-before-seen trigger. Claiming the row with
   // the triggering comment id makes every later tick a no-op until a strictly
   // newer whitelisted comment appears, so each trigger runs exactly once.
-  private async maybeEnqueue(issue: IssueRef): Promise<void> {
-    const commentId = await this.triggerCommentId(issue);
+  private async maybeEnqueue(job: Job, item: TriggerItem): Promise<void> {
+    const commentId = await this.triggerCommentId(item);
     if (commentId === null) return;
     const jobUuid = randomUUID();
-    const runId = formatRunId(issue.repo, issue.number, this.job.id, jobUuid);
-    if (!this.store.claimProcessing(issue.repo, issue.number, runId, commentId)) {
-      log.info("skip", `${issue.repo}#${issue.number}: trigger was already claimed`);
+    const runId = formatRunId(item.repo, item.number, job.id, jobUuid);
+    if (!this.store.claimProcessing(item.repo, item.number, runId, commentId)) {
+      log.info("skip", `${item.repo}#${item.number}: trigger was already claimed`);
       return;
     }
-    this.store.recordRun(queuedRun(this.job, runId, new Date().toISOString())); // visible as queued until it starts
-    this.queue.enqueue({ repo: issue.repo, issueNumber: issue.number, issueAuthor: issue.author, jobUuid, runId });
-    log.info("enqueue", `${issue.repo}#${issue.number} queued (depth ${this.queue.size}, comment ${commentId})`);
+    this.store.recordRun(queuedRun(job, runId, new Date().toISOString())); // visible as queued until it starts
+    this.queue.enqueue({ job, trigger: item, jobUuid, runId });
+    log.info("enqueue", `${item.repo}#${item.number} queued (depth ${this.queue.size}, comment ${commentId})`);
   }
 
   // The comment id to claim for this run, or null when nothing new should run. A
-  // brand-new issue (no ledger row) triggers on a whitelisted author and
+  // brand-new item (no ledger row) triggers on a whitelisted author and
   // baselines to its newest whitelisted comment, so replies already present at
-  // creation ride along in the prompt instead of re-firing. An issue already seen
+  // creation ride along in the prompt instead of re-firing. An item already seen
   // re-triggers only on a whitelisted comment strictly newer than the watermark.
-  private async triggerCommentId(issue: IssueRef): Promise<number | null> {
-    if (!this.store.isProcessed(issue.repo, issue.number)) {
-      if (isAllowedAuthor(issue.author, this.whitelist)) return this.newestWhitelistedComment(issue);
-      log.info("skip", `${issue.repo}#${issue.number}: author @${issue.author} not whitelisted`);
+  private async triggerCommentId(item: TriggerItem): Promise<number | null> {
+    if (!this.store.isProcessed(item.repo, item.number)) {
+      if (isAllowedAuthor(item.author, this.whitelist)) return this.newestWhitelistedComment(item);
+      log.info("skip", `${item.repo}#${item.number}: author @${item.author} not whitelisted`);
       return null;
     }
-    const newest = await this.newestWhitelistedComment(issue);
-    return newest > this.store.lastProcessedComment(issue.repo, issue.number) ? newest : null;
+    const newest = await this.newestWhitelistedComment(item);
+    return newest > this.store.lastProcessedComment(item.repo, item.number) ? newest : null;
   }
 
   // The id of the newest comment authored by a whitelisted user, or 0 if none.
   // Strappy's own comments are not whitelisted, so they never raise this — the
-  // poller can never re-trigger off its own PR-link or error replies.
-  private async newestWhitelistedComment(issue: IssueRef): Promise<number> {
-    const comments = await this.client.listComments(issue.repo, issue.number);
+  // poller can never re-trigger off its own PR-link, review, or error replies.
+  // (A PR is an issue to the comment API, so this serves both watchers.)
+  private async newestWhitelistedComment(item: TriggerItem): Promise<number> {
+    const comments = await this.client.listComments(item.repo, item.number);
     let newest = 0;
     for (const c of comments) {
       if (c.id > newest && isAllowedAuthor(c.author, this.whitelist)) newest = c.id;
@@ -303,19 +386,20 @@ export class IssuePoller {
   }
 
   private async runItem(item: QueueItem): Promise<void> {
-    log.info("run", `${item.repo}#${item.issueNumber} — starting (${item.runId})`);
+    const { repo, number } = item.trigger;
+    log.info("run", `${repo}#${number} — starting (${item.runId})`);
     try {
       const run = await runJob(
-        this.job,
-        { repo: item.repo, issueNumber: item.issueNumber, issueAuthor: item.issueAuthor, jobUuid: item.jobUuid },
+        item.job,
+        { ...item.trigger.inputs, jobUuid: item.jobUuid },
         { registry: this.registry, store: this.store, newRunId: () => item.runId, ...(this.cleanup && { cleanup: this.cleanup }) },
       );
-      this.store.setStatus(item.repo, item.issueNumber, item.runId, run.status);
-      log.info("run", `${item.repo}#${item.issueNumber} -> ${run.status} (${item.runId})`);
+      this.store.setStatus(repo, number, item.runId, run.status);
+      log.info("run", `${repo}#${number} -> ${run.status} (${item.runId})`);
       if (run.status === "failed") await this.postComment(item, this.failureBody(item, run));
     } catch (error) {
-      this.store.setStatus(item.repo, item.issueNumber, item.runId, "failed");
-      log.error("run", `${item.repo}#${item.issueNumber} crashed`, error);
+      this.store.setStatus(repo, number, item.runId, "failed");
+      log.error("run", `${repo}#${number} crashed`, error);
       await this.postComment(item, failureComment(item.runId, message(error)));
     }
   }
@@ -324,31 +408,32 @@ export class IssuePoller {
   // "Prompt Check Failed" comment (the guard model's voiced reason as markdown);
   // any other failure gets the generic harness report.
   private failureBody(item: QueueItem, run: JobRun): string {
-    const rejection = this.promptCheckRejection(run);
+    const rejection = this.promptCheckRejection(item.job, run);
     if (rejection !== null) return promptCheckComment(false, rejection);
-    return failureComment(item.runId, failureNote(run), attemptedSummary(run, failureOutputKeys(this.job)));
+    return failureComment(item.runId, failureNote(run), attemptedSummary(run, failureOutputKeys(item.job)));
   }
 
   // The guard model's voiced reason when THIS run failed at the security gate, or
   // null for any other failure. Keys off the failed step's kind (security.scan),
   // so it tracks the job definition rather than a hard-coded step id; the security
   // step throws its reason as the error, so the recorded note carries it verbatim.
-  private promptCheckRejection(run: JobRun): string | null {
+  private promptCheckRejection(job: Job, run: JobRun): string | null {
     const failed = run.stepRuns.find((s) => s.status === "failed");
     if (failed === undefined || !failed.note) return null;
-    const kind = this.job.steps.find((s) => s.id === failed.stepId)?.kind;
+    const kind = job.steps.find((s) => s.id === failed.stepId)?.kind;
     return kind === "security.scan" ? failed.note : null;
   }
 
-  // Best-effort: post a comment back on the issue so a human sees the outcome
+  // Best-effort: post a comment back on the issue/PR so a human sees the outcome
   // without reading the server log. A comment failure is logged, never thrown — it
   // must not crash the queue or mask the job failure it is reporting.
   private async postComment(item: QueueItem, body: string): Promise<void> {
+    const { repo, number } = item.trigger;
     try {
-      const id = await this.client.commentOnIssue(item.repo, item.issueNumber, body);
-      log.info("postComment", `commented on ${item.repo}#${item.issueNumber} (comment ${id})`);
+      const id = await this.client.commentOnIssue(repo, number, body);
+      log.info("postComment", `commented on ${repo}#${number} (comment ${id})`);
     } catch (error) {
-      log.error("postComment", `could not comment on ${item.repo}#${item.issueNumber}`, error);
+      log.error("postComment", `could not comment on ${repo}#${number}`, error);
     }
   }
 }

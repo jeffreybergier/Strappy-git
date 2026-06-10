@@ -1,9 +1,10 @@
 import type { Job, JobRun } from "./types.js";
 import { processIssueJob } from "./processIssueJob.js";
+import { processPullRequestJob } from "./processPullRequestJob.js";
 
-// process-issue is the only real process today. Add more here as they exist.
+// The real processes the poller watches for. Add more here as they exist.
 export function seedJobs(): Job[] {
-  return [processIssueJob()];
+  return [processIssueJob(), processPullRequestJob()];
 }
 
 // Runs are created by the scheduler/poller at runtime; none are seeded so the
