@@ -1,7 +1,7 @@
 import "dotenv/config";
 import path from "node:path";
 import express from "express";
-import { config } from "./config.js";
+import { config, gitHubToken } from "./config.js";
 import { createLogger } from "./logger.js";
 import type { JobReadStore } from "./jobs/store.js";
 import { openDatabase, seedDatabase, syncJobs } from "./jobs/db.js";
@@ -51,8 +51,8 @@ function warnIfNoKey(): void {
 // replies on same-repo PRs) when a token is set (repos are auto-discovered). An
 // empty whitelist is allowed but warned (fail-closed: it would act for nobody).
 function startPoller(store: SqliteJobStore): void {
-  const token = process.env[config.github.tokenEnv];
-  if (token === undefined || token.trim() === "") {
+  const token = gitHubToken();
+  if (token === undefined) {
     log.warn("startPoller", `${config.github.tokenEnv} not set — trigger poller disabled`);
     return;
   }

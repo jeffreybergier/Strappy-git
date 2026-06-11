@@ -19,6 +19,22 @@ function listFromEnv(name: string): string[] {
 // for the review step, so OPENROUTER_REVIEW_MODEL only has to be set to differ.
 const defaultModel = process.env.OPENROUTER_MODEL ?? "deepseek/deepseek-v4-pro";
 
+// The GitHub token (the push credential) is captured once at startup and then
+// REMOVED from process.env, so no child process — in particular the LLM's bash
+// tool — can ever read it from the environment (`echo $GITHUB_TOKEN`,
+// /proc/<pid>/environ). The server passes it explicitly where needed. The
+// OpenRouter key cannot get the same treatment: pi re-resolves it from
+// process.env on every API request, so it is scrubbed per-spawn in llm/pi.ts
+// instead.
+const capturedGitHubToken = captureEnv("GITHUB_TOKEN");
+
+function captureEnv(name: string): string | undefined {
+  const value = process.env[name];
+  delete process.env[name];
+  if (value === undefined || value.trim() === "") return undefined;
+  return value;
+}
+
 export const config = {
   port: intFromEnv("PORT", 3000),
   host: process.env.HOST ?? "0.0.0.0",
@@ -54,10 +70,15 @@ export function requireOpenRouterKey(): string {
   return key;
 }
 
+// Both accessors return the value captured (and scrubbed from process.env) at
+// startup; setting the env var after module load has no effect by design.
+export function gitHubToken(): string | undefined {
+  return capturedGitHubToken;
+}
+
 export function requireGitHubToken(): string {
-  const token = process.env[config.github.tokenEnv];
-  if (typeof token !== "string" || token.trim() === "") {
+  if (capturedGitHubToken === undefined) {
     throw new Error(`[config.requireGitHubToken] missing env ${config.github.tokenEnv}`);
   }
-  return token;
+  return capturedGitHubToken;
 }

@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
-import { summarizeExecution, mergeExecutions, nudgePrompt, createStreamPrinter, logExecution, logValues, transcriptSlug } from "./pi.js";
+import { summarizeExecution, mergeExecutions, nudgePrompt, createStreamPrinter, logExecution, logValues, transcriptSlug, scrubSpawnEnv, scrubbedBashTool } from "./pi.js";
+import { config } from "../config.js";
 import type { LlmExecution } from "../jobs/types.js";
 
 // Synthetic session events for the stream printer; cast past the SDK's event union.
@@ -232,4 +233,29 @@ test("mergeExecutions skips an empty first text instead of leading with a newlin
 
 test("mergeExecutions rejects a missing execution", () => {
   assert.throws(() => mergeExecutions(undefined as never, exec({})), /two executions are required/);
+});
+
+test("scrubSpawnEnv strips both credentials from the spawn env and keeps the rest", () => {
+  const context = {
+    command: "env",
+    cwd: "/tmp/clone",
+    env: {
+      [config.openRouter.apiKeyEnv]: "sk-or-secret",
+      [config.github.tokenEnv]: "ghp-secret",
+      PATH: "/usr/bin",
+    },
+  };
+  const scrubbed = scrubSpawnEnv(context);
+  assert.equal(scrubbed.env[config.openRouter.apiKeyEnv], undefined);
+  assert.equal(scrubbed.env[config.github.tokenEnv], undefined);
+  assert.equal(scrubbed.env.PATH, "/usr/bin");
+  assert.equal(scrubbed.command, "env");
+  assert.equal(scrubbed.cwd, "/tmp/clone");
+  // The original context must not be mutated.
+  assert.equal(context.env[config.openRouter.apiKeyEnv], "sk-or-secret");
+});
+
+test("scrubbedBashTool is named bash so it shadows the built-in, and rejects a blank cwd", () => {
+  assert.equal(scrubbedBashTool("/tmp/clone").name, "bash");
+  assert.throws(() => scrubbedBashTool("  "), /cwd must be a non-empty string/);
 });

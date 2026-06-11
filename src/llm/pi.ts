@@ -10,10 +10,11 @@ import {
   SessionManager,
   SettingsManager,
   createAgentSession,
+  createBashToolDefinition,
   defineTool,
   getAgentDir,
 } from "@earendil-works/pi-coding-agent";
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { BashSpawnContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { TObject } from "typebox";
@@ -224,6 +225,30 @@ function buildSubmitTool(schema: TObject, toolName: string, capture: (args: Reco
   });
 }
 
+// pi's built-in bash tool hands the child shell the server's FULL process.env
+// (its getShellEnv spreads process.env), which would expose the OpenRouter key
+// to model-authored commands. This same-named replacement shadows the built-in
+// (custom tools register after built-ins under one name registry) and scrubs
+// the secrets from the spawn env. The GitHub token is already deleted from
+// process.env at startup (config.ts); it is scrubbed here too as defense in
+// depth.
+export function scrubSpawnEnv(context: BashSpawnContext): BashSpawnContext {
+  const env = { ...context.env };
+  delete env[config.openRouter.apiKeyEnv];
+  delete env[config.github.tokenEnv];
+  return { ...context, env };
+}
+
+export function scrubbedBashTool(cwd: string): ToolDefinition {
+  if (typeof cwd !== "string" || cwd.trim() === "") {
+    throw new Error("[PiClient.scrubbedBashTool] cwd must be a non-empty string");
+  }
+  // The cast erases the definition's concrete generics: pi's render callback
+  // makes ToolDefinition<bashSchema, …> unassignable to the bare ToolDefinition
+  // that customTools accepts, even though the runtime shape is identical.
+  return createBashToolDefinition(cwd, { spawnHook: scrubSpawnEnv }) as unknown as ToolDefinition;
+}
+
 async function openSession(sm: SessionManager, stepPrompt?: string, customTools?: ToolDefinition[], cwd?: string, builtinTools = true, modelId?: string): Promise<AgentSession> {
   const sessionCwd = cwd ?? process.cwd();
   const base = {
@@ -236,10 +261,15 @@ async function openSession(sm: SessionManager, stepPrompt?: string, customTools?
   };
   // Tool exposure: no customTools -> empty allowlist disables every tool (plain
   // text completion). With customTools, built-in read/write/edit/bash stay active
-  // alongside it — unless builtinTools is false, where noTools "builtin" drops the
-  // built-ins but keeps the custom tool (submit-only, for an untrusted-input step).
+  // alongside it — bash swapped for the env-scrubbed override — unless
+  // builtinTools is false, where noTools "builtin" drops the built-ins but keeps
+  // the custom tool (submit-only, for an untrusted-input step).
   const opts = customTools
-    ? { ...base, customTools, ...(builtinTools ? {} : { noTools: "builtin" as const }) }
+    ? {
+        ...base,
+        customTools: builtinTools ? [...customTools, scrubbedBashTool(sessionCwd)] : customTools,
+        ...(builtinTools ? {} : { noTools: "builtin" as const }),
+      }
     : { ...base, tools: [] };
   const { session } = await createAgentSession(opts);
   return session;
