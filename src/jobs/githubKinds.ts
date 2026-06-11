@@ -133,11 +133,11 @@ async function commitPush(deps: GitHubKindDeps, ctx: StepContext): Promise<StepV
   const newBranch = str(ctx.inputs, "newBranch");
   if (!(await git.hasChanges(workingDirectory))) {
     log.info("commitPush", `working tree is clean; skipping commit and push of ${newBranch}`);
-    return { pushed: false };
+    return { pushed: false, diff: "" };
   }
-  await git.commitAll(workingDirectory, str(ctx.inputs, "commitMessage"), deps.committer);
+  const diff = await git.commitAll(workingDirectory, str(ctx.inputs, "commitMessage"), deps.committer);
   await git.pushBranch(workingDirectory, newBranch, deps.token);
-  return { pushed: true };
+  return { pushed: true, diff };
 }
 
 async function openPullRequest(deps: GitHubKindDeps, ctx: StepContext): Promise<StepValues> {

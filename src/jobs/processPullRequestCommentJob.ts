@@ -144,6 +144,7 @@ export function processPullRequestCommentJob(): Job {
           io("inputTokens", "integer", "pass", "Carried to the comment step (comment footer)"),
           io("outputTokens", "integer", "pass", "Carried to the comment step (comment footer)")],
         [io("pushed", "boolean", "step", "True when changes were committed and pushed; false when the model made none — the reply step keys its heading off this"),
+          io("diff", "string", "receipt", "Terminal: the committed diff (empty when nothing was pushed), recorded for the dashboard"),
           io("updateSummary", "string", "pass", "Carried to the comment step"),
           io("cost", "number", "pass", "Carried to the comment step (comment footer)"),
           io("model", "string", "pass", "Carried to the comment step (comment footer)"),

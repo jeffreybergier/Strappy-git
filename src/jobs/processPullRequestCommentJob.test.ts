@@ -48,6 +48,7 @@ test("processPullRequestCommentJob threads the pushed flag from commit-push into
   const job = processPullRequestCommentJob();
   const push = job.steps.find((s) => s.id === "commit-push");
   assert.equal(push?.outputs.find((io) => io.key === "pushed")?.source, "step", "pushed is consumable, not a terminal receipt");
+  assert.equal(push?.outputs.find((io) => io.key === "diff")?.source, "receipt", "the diff is recorded for the dashboard, never consumed");
   const reply = job.steps.find((s) => s.id === "comment-update");
   const input = reply?.inputs.find((io) => io.key === "pushed");
   assert.equal(input?.source, "step");

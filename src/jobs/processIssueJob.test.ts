@@ -16,6 +16,11 @@ test("processIssueJob runs end-to-end through stub kinds (no creds, no mutations
   assert.ok(run.stepRuns.every((s) => s.status === "succeeded"));
 });
 
+test("processIssueJob records the committed diff as a terminal receipt on commit-push", () => {
+  const push = processIssueJob().steps.find((s) => s.id === "commit-push");
+  assert.equal(push?.outputs.find((io) => io.key === "diff")?.source, "receipt", "the diff is recorded for the dashboard, never consumed");
+});
+
 test("processIssueJob persists to SQLite and records its run", async () => {
   const db = openDatabase(":memory:");
   const store = new SqliteJobStore(db);

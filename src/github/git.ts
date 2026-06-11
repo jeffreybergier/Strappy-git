@@ -118,8 +118,21 @@ export async function hasChanges(workdir: string): Promise<boolean> {
   return status !== "";
 }
 
-export async function commitAll(workdir: string, message: string, identity: CommitIdentity): Promise<void> {
+// Capped so one lockfile churn can't bloat the persisted StepRun row or the
+// dashboard's /api/runs payload.
+const MAX_DIFF_CHARS = 200_000;
+
+function capDiff(diff: string): string {
+  if (diff.length <= MAX_DIFF_CHARS) return diff;
+  return `${diff.slice(0, MAX_DIFF_CHARS)}\n… diff truncated (${diff.length} chars)`;
+}
+
+// Returns the staged diff, captured between add and commit — the only point
+// where untracked files are visible to `git diff`. Recorded on the run as the
+// commit/push step's "diff" receipt.
+export async function commitAll(workdir: string, message: string, identity: CommitIdentity): Promise<string> {
   await runGit(["-C", workdir, "add", "-A"]);
+  const diff = await runGit(["-C", workdir, "diff", "--cached"]);
   await runGit([
     "-C", workdir,
     "-c", `user.name=${identity.name}`,
@@ -127,6 +140,7 @@ export async function commitAll(workdir: string, message: string, identity: Comm
     "commit", "-m", message,
   ]);
   log.info("commitAll", "committed staged changes");
+  return capDiff(diff);
 }
 
 export async function pushBranch(workdir: string, branch: string, token: string): Promise<void> {

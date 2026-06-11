@@ -160,6 +160,7 @@ export function processIssueJob(): Job {
           io("inputTokens", "integer", "pass", "Carried to the open-PR step (PR footer)"),
           io("outputTokens", "integer", "pass", "Carried to the open-PR step (PR footer)")],
         [io("pushed", "boolean", "receipt", "Terminal: the branch was pushed"),
+          io("diff", "string", "receipt", "Terminal: the committed diff, recorded for the dashboard"),
           io("workingDirectory", "string", "pass", "Carried to the review step"),
           io("userPrompt", "string", "pass", "Carried to the review step"),
           io("newBranch", "string", "pass", "Carried to the open-PR step"),

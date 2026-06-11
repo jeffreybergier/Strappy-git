@@ -30,8 +30,10 @@ test("hasChanges tracks the working tree: clean -> untracked file -> committed",
     assert.equal(await hasChanges(dir), false, "a fresh repo is clean");
     await fs.writeFile(path.join(dir, "new.txt"), "hello");
     assert.equal(await hasChanges(dir), true, "an untracked file is a change");
-    await commitAll(dir, "add new.txt", { name: "test", email: "test@example.com" });
+    const diff = await commitAll(dir, "add new.txt", { name: "test", email: "test@example.com" });
     assert.equal(await hasChanges(dir), false, "committing returns the tree to clean");
+    assert.match(diff, /\+\+\+ b\/new\.txt/, "the returned diff covers the untracked file");
+    assert.match(diff, /\+hello/, "the returned diff carries the added content");
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
@@ -39,4 +41,17 @@ test("hasChanges tracks the working tree: clean -> untracked file -> committed",
 
 test("hasChanges rejects a blank workdir", async () => {
   await assert.rejects(() => hasChanges(""), /workdir is required/);
+});
+
+test("commitAll caps an oversized diff with a truncation marker", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "strappy-git-test-"));
+  try {
+    await exec("git", ["-C", dir, "init"]);
+    await fs.writeFile(path.join(dir, "big.txt"), "x".repeat(300_000));
+    const diff = await commitAll(dir, "add big.txt", { name: "test", email: "test@example.com" });
+    assert.ok(diff.length < 300_000, "the diff is capped below the raw content size");
+    assert.match(diff, /… diff truncated \(\d+ chars\)$/);
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });
