@@ -561,7 +561,7 @@ test("a whitelisted reply on a fork PR fires nothing (no branch to push to)", as
   assert.equal(store.listRuns().length, 0);
 });
 
-// ---- branch-protection check (advisory: warn per tick, never block) ---------
+// ---- branch-protection check (advisory: warn once, never block) -------------
 
 test("isPushProtected requires an active pull_request rule", () => {
   assert.equal(isPushProtected(["pull_request", "non_fast_forward", "deletion"]), true);
@@ -594,6 +594,59 @@ test("an unverifiable protection check never blocks polling (e.g. plan-gated 403
   assert.equal(store.isProcessed("o/r", 41), true);
   assert.equal(store.listRuns().length, 1);
   assert.equal(store.listRuns()[0]?.status, "succeeded");
+});
+
+// ---- log noise control (reasons print on change, repeats go to debug) -------
+
+test("a skipped item logs its reason at info once across ticks", async (t) => {
+  const { poller } = setup({ "o/r": [issue("o/r", 50, "attacker")] });
+  const info = t.mock.method(console, "info", () => {});
+  await poller.tick();
+  await poller.whenIdle();
+  await poller.tick();
+  await poller.whenIdle();
+  const skips = info.mock.calls.map((c) => String(c.arguments[0])).filter((l) => l.includes("not whitelisted"));
+  assert.equal(skips.length, 1);
+  assert.match(skips[0] ?? "", /o\/r#50 \(process-issue\): author @attacker not whitelisted/);
+});
+
+test("a processed creation-activated item logs why it will not re-fire, once", async (t) => {
+  const { store, poller } = setup({ "o/r": [issue("o/r", 51, "jeffreybergier")] });
+  await poller.tick();
+  await poller.whenIdle();
+  const info = t.mock.method(console, "info", () => {});
+  await poller.tick();
+  await poller.whenIdle();
+  await poller.tick();
+  await poller.whenIdle();
+  const skips = info.mock.calls.map((c) => String(c.arguments[0])).filter((l) => l.includes("already processed"));
+  assert.equal(skips.length, 1);
+  assert.match(skips[0] ?? "", /o\/r#51 \(process-issue\): already processed; a creation-activated trigger fires only once/);
+  assert.equal(store.listRuns().length, 1);
+});
+
+test("an unchanged item count logs at info once; a change logs again", async (t) => {
+  const open: IssueRef[] = [];
+  const { poller } = setup({ "o/r": open });
+  const info = t.mock.method(console, "info", () => {});
+  await poller.tick();
+  await poller.tick();
+  open.push(issue("o/r", 52, "attacker"));
+  await poller.tick();
+  await poller.whenIdle();
+  const counts = info.mock.calls.map((c) => String(c.arguments[0])).filter((l) => l.includes("open issue(s) for process-issue"));
+  assert.equal(counts.length, 2);
+  assert.match(counts[0] ?? "", /o\/r: 0 open issue\(s\)/);
+  assert.match(counts[1] ?? "", /o\/r: 1 open issue\(s\)/);
+});
+
+test("the branch-protection warning fires once per repo, not every tick", async (t) => {
+  const { poller } = setup({ "o/r": [] }, { listBranchRules: async () => [] });
+  const warn = t.mock.method(console, "warn", () => {});
+  await poller.tick();
+  await poller.tick();
+  const warns = warn.mock.calls.map((c) => String(c.arguments[0])).filter((l) => l.includes("branch protection is OFF"));
+  assert.equal(warns.length, 1);
 });
 
 // ---- failure reporting (post the error back to the issue, no LLM) -----------

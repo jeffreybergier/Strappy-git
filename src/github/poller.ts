@@ -54,7 +54,7 @@ export function watcherFor(job: Job, client: GitHubClient): Watcher {
   validateWatchedTrigger(job.trigger);
   const source = job.trigger.subject === "issue"
     ? issueSource(client)
-    : pullRequestSource(client, conditionFilter(job.trigger.conditions));
+    : pullRequestSource(client, conditionFilter(job.trigger.conditions), job.id);
   return { job, source };
 }
 
@@ -102,14 +102,21 @@ function conditionPredicate(condition: TriggerCondition): ((pr: PullRequestRef) 
 
 // Adapts the open-PR feed to the generic poller; inputs mirror
 // pullRequestTriggerInputs / pullRequestCommentTriggerInputs (one shape).
-export function pullRequestSource(client: GitHubClient, filter: (pr: PullRequestRef) => boolean): TriggerSource {
+// PRs dropped by the trigger conditions (fork head, prefixed branch) never
+// reach the counts the poller logs, so the drop itself is logged at debug.
+export function pullRequestSource(client: GitHubClient, filter: (pr: PullRequestRef) => boolean, jobId: string): TriggerSource {
   if (!client) throw new Error("[Poller.pullRequestSource] client is required");
   if (typeof filter !== "function") throw new Error("[Poller.pullRequestSource] filter must be a function");
+  if (typeof jobId !== "string" || jobId.trim() === "") throw new Error("[Poller.pullRequestSource] jobId must be a non-empty string");
   return {
     name: "pull request(s)",
-    list: async (repo) => (await client.listOpenPullRequests(repo))
-      .filter((pr) => filter(pr))
-      .map((pr) => triggerItem(pr)),
+    list: async (repo) => {
+      const open = await client.listOpenPullRequests(repo);
+      const items = open.filter((pr) => filter(pr)).map((pr) => triggerItem(pr));
+      const dropped = open.length - items.length;
+      if (dropped > 0) log.debug("pollRepo", `${repo}: ${dropped} open PR(s) hidden from ${jobId} by its trigger conditions`);
+      return items;
+    },
   };
 }
 
@@ -332,6 +339,11 @@ interface QueueItem {
   runId: string;
 }
 
+// The poller's verdict on one candidate: fire (with the comment id to claim)
+// or skip (with the human-readable reason). Every "do nothing" path must name
+// itself, so the log can always say why an open item is not being processed.
+type TriggerDecision = { fire: number } | { skip: string };
+
 export interface TriggerPollerDeps {
   client: GitHubClient;
   store: JobWriteStore & TriggerLedger;
@@ -360,6 +372,13 @@ export class TriggerPoller {
   private readonly queue: SequentialQueue<QueueItem>;
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking: Promise<void> | null = null;
+  // Steady-state memory so unchanged poll outcomes print at debug, not info:
+  // last discovered-repo list, last item count per (repo, job), last skip
+  // reason per (item, job), and repos already warned about branch protection.
+  private lastRepos: string | null = null;
+  private readonly lastCounts = new Map<string, number>();
+  private readonly lastSkips = new Map<string, string>();
+  private readonly unprotectedWarned = new Set<string>();
 
   constructor(deps: TriggerPollerDeps) {
     if (!deps || !deps.client) throw new Error("[TriggerPoller] client is required");
@@ -426,7 +445,14 @@ export class TriggerPoller {
 
   private async runTick(): Promise<void> {
     const repos = await this.resolveRepos();
-    log.info("tick", `discovered ${repos.length} repo(s): ${repos.join(", ") || "(none)"}`);
+    const key = repos.join(",");
+    const line = `discovered ${repos.length} repo(s): ${repos.join(", ") || "(none)"}`;
+    if (this.lastRepos === key) {
+      log.debug("tick", line);
+    } else {
+      this.lastRepos = key;
+      log.info("tick", line);
+    }
     for (const repo of repos) await this.pollRepo(repo);
   }
 
@@ -450,25 +476,50 @@ export class TriggerPoller {
   private async pollWatcher(repo: string, watcher: Watcher): Promise<void> {
     try {
       const items = await watcher.source.list(repo);
-      log.info("pollRepo", `${repo}: ${items.length} open ${watcher.source.name}`);
+      this.logCount(repo, watcher, items.length);
       for (const item of items) await this.maybeEnqueue(watcher, item);
     } catch (error) {
-      log.error("pollRepo", `${watcher.source.name} failed for ${repo}`, error);
+      log.error("pollRepo", `${watcher.source.name} failed for ${repo} (${watcher.job.id})`, error);
     }
   }
 
-  // Advisory check, never blocking: the repo is polled either way, but a
-  // default branch that accepts direct pushes (or can't be verified — e.g. a
-  // private repo on a plan without rulesets) gets exactly one warn line per
-  // tick. One line, no error dump: this fires every cycle until fixed.
+  // Item counts repeat every tick, so an unchanged count prints at debug and
+  // only a change prints at info — the default log stays quiet at steady state.
+  private logCount(repo: string, watcher: Watcher, count: number): void {
+    const key = `${repo}/${watcher.job.id}`;
+    const line = `${repo}: ${count} open ${watcher.source.name} for ${watcher.job.id}`;
+    if (this.lastCounts.get(key) === count) {
+      log.debug("pollRepo", line);
+      return;
+    }
+    this.lastCounts.set(key, count);
+    log.info("pollRepo", line);
+  }
+
+  // Advisory check, never blocking: the repo is polled either way. A default
+  // branch that accepts direct pushes (or can't be verified — e.g. a private
+  // repo on a plan without rulesets) warns once when first seen, then repeats
+  // only at debug; turning protection on re-arms the warning for a later flip.
   private async warnIfUnprotected(repo: string): Promise<void> {
     try {
       const branch = await this.client.getDefaultBranch(repo);
-      if (isPushProtected(await this.client.listBranchRules(repo, branch))) return;
-      log.warn("pollRepo", `${repo}: main branch protection is OFF — ${branch} accepts direct pushes; add a ruleset requiring a pull request`);
+      if (isPushProtected(await this.client.listBranchRules(repo, branch))) {
+        this.unprotectedWarned.delete(repo);
+        return;
+      }
+      this.warnProtectionOnce(repo, `${repo}: main branch protection is OFF — ${branch} accepts direct pushes; add a ruleset requiring a pull request`);
     } catch (error) {
-      log.warn("pollRepo", `${repo}: could not verify main branch protection (${message(error)})`);
+      this.warnProtectionOnce(repo, `${repo}: could not verify main branch protection (${message(error)})`);
     }
+  }
+
+  private warnProtectionOnce(repo: string, line: string): void {
+    if (this.unprotectedWarned.has(repo)) {
+      log.debug("pollRepo", line);
+      return;
+    }
+    this.unprotectedWarned.add(repo);
+    log.warn("pollRepo", line);
   }
 
   // Enqueue at most one job per never-before-seen trigger. Claiming the row with
@@ -476,29 +527,48 @@ export class TriggerPoller {
   // newer whitelisted comment appears, so each trigger runs exactly once — the
   // spec's declared "once-per-trigger" condition.
   private async maybeEnqueue(watcher: Watcher, item: TriggerItem): Promise<void> {
-    const commentId = await this.triggerCommentId(watcher.job.trigger.activation, item);
-    if (commentId === null) return;
+    const decision = await this.triggerDecision(watcher.job.trigger.activation, item);
+    if ("skip" in decision) {
+      this.logSkip(watcher.job.id, item, decision.skip);
+      return;
+    }
     const job = watcher.job;
     const jobUuid = randomUUID();
     const runId = formatRunId(item.repo, item.number, job.id, jobUuid);
-    if (!this.store.claimProcessing(item.repo, item.number, runId, commentId)) {
-      log.info("skip", `${item.repo}#${item.number}: trigger was already claimed`);
+    if (!this.store.claimProcessing(item.repo, item.number, runId, decision.fire)) {
+      this.logSkip(job.id, item, "trigger was already claimed");
       return;
     }
     this.store.recordRun(queuedRun(job, runId, new Date().toISOString())); // visible as queued until it starts
     this.queue.enqueue({ job, trigger: item, jobUuid, runId });
-    log.info("enqueue", `${item.repo}#${item.number} queued (depth ${this.queue.size}, comment ${commentId})`);
+    log.info("enqueue", `${item.repo}#${item.number} queued for ${job.id} (depth ${this.queue.size}, comment ${decision.fire})`);
   }
 
-  // The comment id to claim for this run, or null when nothing should run for
-  // this watcher. An item already in the ledger re-triggers only a comment-
-  // activated watcher, and only on a whitelisted comment strictly newer than
-  // the watermark; a never-seen item is decided by firstSight.
-  private async triggerCommentId(activation: Activation, item: TriggerItem): Promise<number | null> {
+  // A skip recurs every tick for as long as the item stays open, so each
+  // (item, job) pair prints at info only when its reason changes; an unchanged
+  // reason repeats at debug.
+  private logSkip(jobId: string, item: TriggerItem, reason: string): void {
+    const key = `${item.repo}#${item.number}/${jobId}`;
+    const line = `${item.repo}#${item.number} (${jobId}): ${reason}`;
+    if (this.lastSkips.get(key) === reason) {
+      log.debug("skip", line);
+      return;
+    }
+    this.lastSkips.set(key, reason);
+    log.info("skip", line);
+  }
+
+  // The verdict for this watcher: the comment id to claim, or the reason not
+  // to run. An item already in the ledger re-triggers only a comment-activated
+  // watcher, and only on a whitelisted comment strictly newer than the
+  // watermark; a never-seen item is decided by firstSight.
+  private async triggerDecision(activation: Activation, item: TriggerItem): Promise<TriggerDecision> {
     if (!this.store.isProcessed(item.repo, item.number)) return this.firstSight(activation, item);
-    if (activation === "creation") return null;
+    if (activation === "creation") return { skip: "already processed; a creation-activated trigger fires only once" };
     const newest = await this.newestWhitelistedComment(item);
-    return newest > this.store.lastProcessedComment(item.repo, item.number) ? newest : null;
+    const watermark = this.store.lastProcessedComment(item.repo, item.number);
+    if (newest > watermark) return { fire: newest };
+    return { skip: `no whitelisted comment newer than the last one processed (newest=${newest || "none"}, processed=${watermark})` };
   }
 
   // First sight of an item (no ledger row yet). A comment-activated watcher
@@ -506,16 +576,16 @@ export class TriggerPoller {
   // A creation-activated watcher fires on a whitelisted author, baselining the
   // watermark to the newest whitelisted comment so replies already present at
   // creation ride along in the prompt instead of re-firing later.
-  private async firstSight(activation: Activation, item: TriggerItem): Promise<number | null> {
+  private async firstSight(activation: Activation, item: TriggerItem): Promise<TriggerDecision> {
     if (activation === "comment") {
       const newest = await this.newestWhitelistedComment(item);
-      return newest > 0 ? newest : null;
+      if (newest > 0) return { fire: newest };
+      return { skip: "comment-activated; no whitelisted comment on the thread yet" };
     }
     if (!isAllowedAuthor(item.author, this.whitelist)) {
-      log.info("skip", `${item.repo}#${item.number}: author @${item.author} not whitelisted`);
-      return null;
+      return { skip: `author @${item.author} not whitelisted` };
     }
-    return this.newestWhitelistedComment(item);
+    return { fire: await this.newestWhitelistedComment(item) };
   }
 
   // The id of the newest comment authored by a whitelisted user, or 0 if none.

@@ -78,7 +78,18 @@ export function createGitHubClient(token: string): GitHubClient {
   if (typeof token !== "string" || token.trim() === "") {
     throw new Error("[GitHub.createGitHubClient] token is required");
   }
-  const octokit = new Octokit({ auth: token });
+  // Octokit's request-log plugin prints every API call at info (success) and
+  // error (failure, before rethrowing). Callers already catch and report
+  // failures with context, so raw request lines surface only at LOG_LEVEL=debug.
+  const octokit = new Octokit({
+    auth: token,
+    log: {
+      debug: () => {},
+      info: (message: string) => log.debug("request", message),
+      warn: (message: string) => log.warn("request", message),
+      error: (message: string) => log.debug("request", message),
+    },
+  });
   return {
     listAccessibleRepos: () => listAccessibleRepos(octokit),
     listOpenIssues: (repo) => listOpenIssues(octokit, repo),

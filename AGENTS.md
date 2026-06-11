@@ -134,6 +134,7 @@ Copy `.env.example` → `.env` (the repo `.gitignore` ignores `.env`, keeps
 |---|---|---|
 | `OPENROUTER_API_KEY` | (none) | OpenRouter key; required only when an LLM step runs |
 | `OPENROUTER_MODEL` | `deepseek/deepseek-v4-pro` | Default model id |
+| `LOG_LEVEL` | `info` | Minimum log level (`debug`/`info`/`warn`/`error`); at `info`, steady-state poller lines (counts, skip reasons) print only when they change — `debug` prints every tick plus raw GitHub request lines |
 | `PORT` | `3000` | Dashboard port |
 | `HOST` | `0.0.0.0` | Bind interface (keep `0.0.0.0` for Docker reachability) |
 | `DB_PATH` | `data/strappy.sqlite` | SQLite file path (gitignored; auto-created + seeded) |
