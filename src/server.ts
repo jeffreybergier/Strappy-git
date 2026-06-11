@@ -1,5 +1,6 @@
 import "dotenv/config";
 import path from "node:path";
+import type { Server } from "node:http";
 import express from "express";
 import { config, gitHubToken } from "./config.js";
 import { createLogger } from "./logger.js";
@@ -9,10 +10,13 @@ import { SqliteJobStore } from "./jobs/sqliteStore.js";
 import { seedJobs, seedRuns } from "./jobs/seed.js";
 import { dashboardRouter } from "./routes/dashboard.js";
 import { apiRouter } from "./routes/api.js";
+import type { RetryDeps } from "./routes/api.js";
 import { createGitHubClient } from "./github/client.js";
+import type { GitHubClient } from "./github/client.js";
 import { sessionsDir } from "./llm/pi.js";
 import { githubStepKinds, githubCleanup } from "./jobs/githubKinds.js";
 import { TriggerPoller, watcherFor } from "./github/poller.js";
+import { reconcileInterruptedRuns } from "./github/recovery.js";
 import { processIssueJob } from "./jobs/processIssueJob.js";
 import { processPullRequestJob } from "./jobs/processPullRequestJob.js";
 import { processPullRequestCommentJob } from "./jobs/processPullRequestCommentJob.js";
@@ -26,7 +30,7 @@ function openStore(): SqliteJobStore {
   return new SqliteJobStore(db);
 }
 
-function createApp(store: JobReadStore): express.Express {
+function createApp(store: JobReadStore, retry: RetryDeps): express.Express {
   const app = express();
   app.set("view engine", "ejs");
   app.set("views", path.resolve(process.cwd(), "views"));
@@ -34,7 +38,7 @@ function createApp(store: JobReadStore): express.Express {
   // (data/sessions/<run>-<step>.html) resolves to a clickable /sessions/ link.
   app.use("/sessions", express.static(sessionsDir()));
   app.use("/", dashboardRouter(store));
-  app.use("/api", apiRouter(store));
+  app.use("/api", apiRouter(store, retry));
   return app;
 }
 
@@ -50,16 +54,14 @@ function warnIfNoKey(): void {
 // Starts the trigger poller (new issues, new same-repo PRs, and whitelisted
 // replies on same-repo PRs) when a token is set (repos are auto-discovered). An
 // empty whitelist is allowed but warned (fail-closed: it would act for nobody).
-function startPoller(store: SqliteJobStore): void {
-  const token = gitHubToken();
-  if (token === undefined) {
+function startPoller(store: SqliteJobStore, client: GitHubClient | null, token: string | undefined): TriggerPoller | null {
+  if (client === null || token === undefined) {
     log.warn("startPoller", `${config.github.tokenEnv} not set — trigger poller disabled`);
-    return;
+    return null;
   }
   if (config.github.userWhitelist.length === 0) {
     log.warn("startPoller", "STRAPPY_USER_WHITELIST empty — poller will act for nobody (fail-closed)");
   }
-  const client = createGitHubClient(token);
   const deps = {
     client,
     token,
@@ -68,7 +70,7 @@ function startPoller(store: SqliteJobStore): void {
     reviewModel: config.openRouter.reviewModel,
     securityModel: config.openRouter.securityModel,
   };
-  new TriggerPoller({
+  const poller = new TriggerPoller({
     client,
     store,
     registry: githubStepKinds(deps),
@@ -85,17 +87,65 @@ function startPoller(store: SqliteJobStore): void {
     ],
     whitelist: config.github.userWhitelist,
     intervalMs: config.github.pollIntervalMs,
-  }).start();
+  });
+  poller.start();
+  return poller;
 }
 
-function start(): void {
+// SIGTERM/SIGINT: stop polling, stop accepting connections, give the in-flight
+// job up to shutdownTimeoutMs to drain, then close the DB and exit. A second
+// signal skips the wait. A run abandoned by the timeout is reconciled (marked
+// "interrupted", reported on its thread) on the next boot.
+function registerShutdown(server: Server, poller: TriggerPoller | null, store: SqliteJobStore): void {
+  let draining = false;
+  const shutdown = (signal: string): void => {
+    if (draining) {
+      log.warn("shutdown", `second ${signal} — exiting immediately`);
+      process.exit(1);
+    }
+    draining = true;
+    log.info("shutdown", `${signal} received — draining (up to ${config.shutdownTimeoutMs}ms)`);
+    void drain(server, poller, store);
+  };
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
+}
+
+async function drain(server: Server, poller: TriggerPoller | null, store: SqliteJobStore): Promise<void> {
+  try {
+    poller?.stop();
+    server.close();
+    if (poller !== null) await Promise.race([poller.whenIdle(), delay(config.shutdownTimeoutMs)]);
+    store.close();
+    log.info("shutdown", "drained; exiting");
+    process.exit(0);
+  } catch (error) {
+    log.error("shutdown", "drain failed", error);
+    process.exit(1);
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms).unref());
+}
+
+async function start(): Promise<void> {
   const store = openStore();
-  const app = createApp(store);
+  const token = gitHubToken();
+  const client = token === undefined ? null : createGitHubClient(token);
+  // Before the poller starts: terminal-mark any run a previous process abandoned
+  // mid-flight and report it on its thread, so nothing stays "running" forever.
+  await reconcileInterruptedRuns({ store, ...(client !== null && { client }) });
+  const app = createApp(store, { admin: store, ...(client !== null && { client }) });
   warnIfNoKey();
-  startPoller(store);
-  app.listen(config.port, config.host, () => {
+  const poller = startPoller(store, client, token);
+  const server = app.listen(config.port, config.host, () => {
     log.info("start", `dashboard listening on ${config.host}:${config.port} (browse http://localhost:${config.port})`);
   });
+  registerShutdown(server, poller, store);
 }
 
-start();
+start().catch((error: unknown) => {
+  log.error("start", "boot failed", error);
+  process.exit(1);
+});

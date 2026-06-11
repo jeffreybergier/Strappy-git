@@ -38,6 +38,9 @@ function captureEnv(name: string): string | undefined {
 export const config = {
   port: intFromEnv("PORT", 3000),
   host: process.env.HOST ?? "0.0.0.0",
+  // How long a SIGTERM/SIGINT waits for an in-flight job to drain before the
+  // process exits anyway (boot-time recovery then reconciles the abandoned run).
+  shutdownTimeoutMs: intFromEnv("SHUTDOWN_TIMEOUT_MS", 30000),
   modelsPath: path.resolve(process.cwd(), "config/models.json"),
   dbPath: path.resolve(process.cwd(), process.env.DB_PATH ?? "data/strappy.sqlite"),
   openRouter: {

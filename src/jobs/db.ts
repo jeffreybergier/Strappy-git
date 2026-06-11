@@ -24,8 +24,8 @@ const log = createLogger("Db");
 type Row = Record<string, unknown>;
 type IODirection = "input" | "output";
 
-const STEP_STATUSES: readonly StepStatus[] = ["pending", "running", "succeeded", "failed", "skipped"];
-const RUN_STATUSES: readonly RunStatus[] = ["queued", "running", "succeeded", "failed"];
+const STEP_STATUSES: readonly StepStatus[] = ["pending", "running", "succeeded", "failed", "skipped", "interrupted"];
+const RUN_STATUSES: readonly RunStatus[] = ["queued", "running", "succeeded", "failed", "interrupted"];
 
 export function openDatabase(dbPath: string): DatabaseSync {
   if (typeof dbPath !== "string" || dbPath.trim() === "") {
@@ -467,6 +467,26 @@ function validateTriggerProcessing(repo: string, issueNumber: number, runId: str
   if (!Number.isInteger(issueNumber)) throw new Error("[Db.markTriggerProcessing] issueNumber must be an integer");
   if (typeof runId !== "string" || runId === "") throw new Error("[Db.markTriggerProcessing] runId must be a non-empty string");
   if (!Number.isInteger(lastCommentId) || lastCommentId < 0) throw new Error("[Db.markTriggerProcessing] lastCommentId must be a non-negative integer");
+}
+
+// The ledger row a recorded run claimed, or null when the run was never started
+// by the poller (seeded/manual runs). run_id holds only the CURRENT claim, so a
+// run superseded by a newer claim on the same (repo, issue) resolves to null.
+export function findTriggerByRunId(db: DatabaseSync, runId: string): { repo: string; issueNumber: number; status: string } | null {
+  if (typeof runId !== "string" || runId === "") throw new Error("[Db.findTriggerByRunId] runId must be a non-empty string");
+  const row = db.prepare("SELECT repo, issue_number, status FROM processed_triggers WHERE run_id = ?").get(runId);
+  if (row === undefined) return null;
+  return { repo: text(row as Row, "repo"), issueNumber: integer(row as Row, "issue_number"), status: text(row as Row, "status") };
+}
+
+// Deletes the ledger row so the poller sees the (repo, issue) as never processed
+// and fires its trigger again on the next tick — the manual retry escape hatch.
+// Returns whether a row existed.
+export function clearTrigger(db: DatabaseSync, repo: string, issueNumber: number): boolean {
+  if (typeof repo !== "string" || repo === "") throw new Error("[Db.clearTrigger] repo must be a non-empty string");
+  if (!Number.isInteger(issueNumber)) throw new Error("[Db.clearTrigger] issueNumber must be an integer");
+  const result = db.prepare("DELETE FROM processed_triggers WHERE repo = ? AND issue_number = ?").run(repo, issueNumber);
+  return Number(result.changes) > 0;
 }
 
 export function setTriggerStatus(db: DatabaseSync, repo: string, issueNumber: number, runId: string, status: string): void {

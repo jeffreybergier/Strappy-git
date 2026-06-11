@@ -96,6 +96,7 @@ function fakeClient(issuesByRepo: Record<string, IssueRef[]>, posted: CapturedCo
     openPullRequest: async () => ({ number: 1, url: "x" }),
     commentOnIssue: async (repo, issueNumber, body) => { posted.push({ repo, issueNumber, body }); return posted.length; },
     closeIssue: async (repo, issueNumber, reason) => { closed.push({ repo, issueNumber, ...(reason !== undefined && { reason }) }); },
+    reopenIssue: async () => { throw new Error("reopenIssue not used in stub run"); },
   };
 }
 
@@ -292,6 +293,7 @@ test("overlapping ticks join the in-flight scan instead of enqueueing twice", as
     openPullRequest: async () => ({ number: 1, url: "x" }),
     commentOnIssue: async () => 1,
     closeIssue: async () => {},
+    reopenIssue: async () => {},
   };
   const poller = new TriggerPoller({
     client,

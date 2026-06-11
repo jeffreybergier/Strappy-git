@@ -61,6 +61,7 @@ export interface GitHubClient {
   openPullRequest(input: OpenPrInput): Promise<{ number: number; url: string }>;
   commentOnIssue(repo: string, issueNumber: number, body: string): Promise<number>;
   closeIssue(repo: string, issueNumber: number, reason?: CloseReason): Promise<void>;
+  reopenIssue(repo: string, issueNumber: number): Promise<void>;
 }
 
 export function parseRepo(repo: string): { owner: string; name: string } {
@@ -89,6 +90,7 @@ export function createGitHubClient(token: string): GitHubClient {
     openPullRequest: (input) => openPullRequest(octokit, input),
     commentOnIssue: (repo, n, body) => commentOnIssue(octokit, repo, n, body),
     closeIssue: (repo, n, reason) => closeIssue(octokit, repo, n, reason),
+    reopenIssue: (repo, n) => reopenIssue(octokit, repo, n),
   };
 }
 
@@ -245,6 +247,18 @@ async function closeIssue(octokit: Octokit, repo: string, issueNumber: number, r
     });
   } catch (error) {
     log.error("closeIssue", `failed for ${repo}#${issueNumber}`, error);
+    throw error;
+  }
+}
+
+// Reopens an issue closed as failed so the open-issue feed lists it again — the
+// manual retry path uses this. A no-op on an already-open issue.
+async function reopenIssue(octokit: Octokit, repo: string, issueNumber: number): Promise<void> {
+  const { owner, name } = parseRepo(repo);
+  try {
+    await octokit.issues.update({ owner, repo: name, issue_number: issueNumber, state: "open" });
+  } catch (error) {
+    log.error("reopenIssue", `failed for ${repo}#${issueNumber}`, error);
     throw error;
   }
 }

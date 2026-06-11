@@ -26,6 +26,16 @@ export interface TriggerLedger {
   setStatus(repo: string, issueNumber: number, runId: string, status: string): void;
 }
 
+// Administrative surface over the ledger, used by boot-time crash recovery and
+// the manual retry endpoint — deliberately separate from TriggerLedger so the
+// poller's contract (and its test fakes) stay untouched. runTrigger maps a
+// recorded run back to the ledger row it claimed; releaseTrigger deletes the
+// claim so the poller fires the trigger again.
+export interface TriggerAdmin {
+  runTrigger(runId: string): { repo: string; issueNumber: number; status: string } | null;
+  releaseTrigger(repo: string, issueNumber: number): boolean;
+}
+
 export class JobStore implements JobReadStore {
   private readonly jobs: Map<string, Job>;
   private readonly runs: JobRun[];

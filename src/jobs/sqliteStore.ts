@@ -1,6 +1,8 @@
 import { DatabaseSync } from "node:sqlite";
 import {
   claimTriggerProcessing,
+  clearTrigger,
+  findTriggerByRunId,
   insertJob,
   isTriggerProcessed,
   lastProcessedComment,
@@ -11,12 +13,12 @@ import {
   setTriggerStatus,
   upsertRun,
 } from "./db.js";
-import type { JobReadStore, JobWriteStore, TriggerLedger } from "./store.js";
+import type { JobReadStore, JobWriteStore, TriggerAdmin, TriggerLedger } from "./store.js";
 import type { Job, JobRun } from "./types.js";
 
 // JobReadStore backed by SQLite. Reads hydrate full Job/JobRun trees; the
 // write methods are the persistence seam for the scheduler.
-export class SqliteJobStore implements JobReadStore, JobWriteStore, TriggerLedger {
+export class SqliteJobStore implements JobReadStore, JobWriteStore, TriggerLedger, TriggerAdmin {
   private readonly db: DatabaseSync;
 
   constructor(db: DatabaseSync) {
@@ -65,5 +67,18 @@ export class SqliteJobStore implements JobReadStore, JobWriteStore, TriggerLedge
 
   setStatus(repo: string, issueNumber: number, runId: string, status: string): void {
     setTriggerStatus(this.db, repo, issueNumber, runId, status);
+  }
+
+  runTrigger(runId: string): { repo: string; issueNumber: number; status: string } | null {
+    return findTriggerByRunId(this.db, runId);
+  }
+
+  releaseTrigger(repo: string, issueNumber: number): boolean {
+    return clearTrigger(this.db, repo, issueNumber);
+  }
+
+  // Graceful-shutdown seam: checkpoints WAL and releases the file handle.
+  close(): void {
+    this.db.close();
   }
 }

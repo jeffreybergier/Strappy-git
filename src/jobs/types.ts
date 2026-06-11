@@ -4,8 +4,11 @@
 
 import type { IoSource, IoType } from "./io.js";
 
-export type StepStatus = "pending" | "running" | "succeeded" | "failed" | "skipped";
-export type RunStatus = "queued" | "running" | "succeeded" | "failed";
+// "interrupted" is a terminal status stamped at boot by recovery
+// (jobs/recovery.ts) onto a run the server abandoned mid-flight — it is never
+// produced by a live scheduler pass.
+export type StepStatus = "pending" | "running" | "succeeded" | "failed" | "skipped" | "interrupted";
+export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "interrupted";
 
 // What a trigger watches: the open-issue feed or the open-PR feed.
 export type TriggerSubject = "issue" | "pull_request";

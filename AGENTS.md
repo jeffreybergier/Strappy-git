@@ -137,6 +137,12 @@ Copy `.env.example` → `.env` (the repo `.gitignore` ignores `.env`, keeps
 | `PORT` | `3000` | Dashboard port |
 | `HOST` | `0.0.0.0` | Bind interface (keep `0.0.0.0` for Docker reachability) |
 | `DB_PATH` | `data/strappy.sqlite` | SQLite file path (gitignored; auto-created + seeded) |
+| `SHUTDOWN_TIMEOUT_MS` | `30000` | How long SIGTERM/SIGINT waits for an in-flight job before exiting anyway |
+
+⚠️ **The local `.env` can hold REAL credentials** — booting the server (even
+for a quick smoke test) starts the live poller, which will claim and run real
+issues/PRs. For local testing run with `GITHUB_TOKEN="" DB_PATH=/tmp/<x>.sqlite`
+(an explicitly empty env var beats `.env`, which disables the poller).
 
 ## Project structure
 
@@ -159,6 +165,9 @@ src/
                        feed filters) over
                        one ledger + sequential queue; issueSource /
                        pullRequestSource / pullRequestReplySource
+    recovery.ts        boot-time crash recovery: marks runs abandoned by a dead
+                       server "interrupted", stamps the ledger, reports on the
+                       thread (claim kept — retry is the explicit re-run path)
   jobs/
     types.ts           ISO 9001 types: Job, TriggerSpec (subject/activation/
                        conditions/failure policy), ProcessStep, StepIO, JobRun, StepRun
@@ -175,13 +184,17 @@ src/
     llmKind.ts         llm step kind (Pi runStructured + derived outputs)
     securityKind.ts    security.scan step kind (prompt-injection gate)
     validateJobGraph.ts / validateJobRegistry.ts  static contract checks
-    store.ts           in-memory JobStore + JobReadStore/TriggerLedger interfaces
+    store.ts           in-memory JobStore + JobReadStore/TriggerLedger/TriggerAdmin
+                       interfaces (TriggerAdmin: run->ledger lookup + claim release)
     schema.ts          SQLite DDL (jobs, process_steps, step_io, *_runs)
     db.ts              node:sqlite data-access: open/seed/sync/read/insert
     sqliteStore.ts     SqliteJobStore (JobReadStore + saveJob/recordRun + ledger)
   routes/
     dashboard.ts       GET /  (server-rendered EJS)
-    api.ts             GET /api/jobs|/api/jobs/:id|/api/runs (JSON)
+    api.ts             GET /api/jobs|/api/jobs/:id|/api/runs (JSON);
+                       POST /api/runs/retry?id=<runId> releases a failed/
+                       interrupted run's trigger claim (reopening a closed
+                       issue) so the poller re-runs it next tick
   llm/
     pi.ts              pi.dev + OpenRouter integration (runStructured) — the LLM seam
 views/dashboard.ejs    Bootstrap 3 (CDN) dashboard rendering the process maps
@@ -216,7 +229,7 @@ into later inputs and persists live/final run state through `SqliteJobStore`.
 ## Verified working
 
 - `npm install` clean; `npm run typecheck` clean (incl. `*.test.ts`).
-- `npm test` → 281 passing.
+- `npm test` → 319 passing.
 - The poller's PR listing (`listOpenPullRequests`) verified live read-only
   against the real repos (returned 0 open PRs; nothing mutated).
 - Dashboard boots, binds `0.0.0.0:3000`, `GET /` returns 200, renders the
@@ -225,6 +238,12 @@ into later inputs and persists live/final run state through `SqliteJobStore`.
   file is gitignored — `git check-ignore` confirms).
 - (Could not run `docker compose` in the build sandbox — no daemon. The maintainer
   confirmed `docker compose up serve` works from the Mac.)
+- **Lifecycle verified live** (2026-06-11, throwaway `/tmp` DB): SIGTERM drains
+  (in-flight job keeps running up to `SHUTDOWN_TIMEOUT_MS`), a second SIGTERM
+  exits immediately; a run abandoned mid-LLM-call was marked "interrupted" with
+  its ledger row stamped on the next boot (comment skipped — booted tokenless).
+- `POST /api/runs/retry` answers 400/404/409 correctly over HTTP; the
+  release-claim + reopen-issue flow is covered by unit tests with a fake client.
 
 ## Next steps / open items
 

@@ -55,6 +55,12 @@
       .runs-table .col-status { width: 110px; }
       .runs-table .col-time { width: 90px; text-align: right; }
       .runs-table td.col-time { font-family: monospace; color: #777; }
+      .runs-table .col-cost { width: 90px; text-align: right; }
+      .runs-table td.col-cost { font-family: monospace; color: #777; }
+      .runs-table .col-job { width: 210px; }
+      .runs-table td.col-job { color: #777; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .retry-link { margin-left: 6px; text-decoration: none; }
+      .spend-line { margin: 0 0 6px; }
       .runs-table .run-row { cursor: pointer; }
       .runs-table .step-row > td { background-color: #fafafa; }
       .transcript-link { margin-left: 6px; white-space: nowrap; }
@@ -198,6 +204,7 @@
         const RUN_BADGE = {
           queued: "default", pending: "default", running: "info",
           succeeded: "success", failed: "danger", skipped: "warning",
+          interrupted: "warning",
         };
 
         const container = document.getElementById("runs");
@@ -247,6 +254,20 @@
           return fmtDuration(end - Date.parse(run.startedAt));
         }
 
+        // Real recorded spend: each LLM-backed step run carries its provider-
+        // reported usage (execution.usage.costTotal); non-LLM steps cost nothing.
+        function stepCost(sr) {
+          return sr.execution && sr.execution.usage ? sr.execution.usage.costTotal || 0 : 0;
+        }
+
+        function runCost(run) {
+          return run.stepRuns.reduce((sum, sr) => sum + stepCost(sr), 0);
+        }
+
+        function fmtCost(value) {
+          return value > 0 ? "$" + value.toFixed(4) : "";
+        }
+
         function stepContract(run, sr) {
           const job = jobsIndex[run.jobId] || {};
           return job[sr.stepId] || { name: sr.stepId, inputs: [], outputs: [] };
@@ -272,17 +293,27 @@
             '" target="_blank" rel="noopener" title="' + esc(path) + '">📄 transcript</a>';
         }
 
-        function statusCell(status) {
-          return '<td class="col-status"><span class="label label-' + badge(status) + '">' + esc(status) + "</span></td>";
+        function statusCell(status, extra) {
+          return '<td class="col-status"><span class="label label-' + badge(status) + '">' + esc(status) + "</span>" + (extra || "") + "</td>";
+        }
+
+        // A failed or interrupted poller-started run gets a retry arrow next to
+        // its status badge: it POSTs /api/runs/retry, which releases the trigger
+        // claim so the next poll tick re-runs the job as a fresh run.
+        function retryHtml(run) {
+          if (run.status !== "failed" && run.status !== "interrupted") return "";
+          return ' <a href="#" class="retry-link" data-retry-run="' + esc(run.id) + '" title="Retry this run">&#8635;</a>';
         }
 
         function runRow(run, open) {
           const caret = '<span class="run-caret">' + (open ? "▾" : "▸") + "</span> ";
-          const name = caret + "<code>" + esc(run.id) + '</code> <span class="text-muted">' + esc(run.jobId) + "</span>";
+          const name = caret + "<code>" + esc(run.id) + "</code>";
           return (
             '<tr class="run-row" data-run="' + esc(run.id) + '">' +
-            statusCell(run.status) +
+            statusCell(run.status, retryHtml(run)) +
+            '<td class="col-job" title="' + esc(run.jobId) + '">' + esc(run.jobId) + "</td>" +
             '<td class="col-name">' + name + "</td>" +
+            '<td class="col-cost">' + esc(fmtCost(runCost(run))) + "</td>" +
             '<td class="col-time">' + esc(runRuntime(run)) + "</td>" +
             "</tr>"
           );
@@ -311,7 +342,9 @@
           return (
             "<tr" + attrs + ">" +
             statusCell(sr.status) +
+            '<td class="col-job"></td>' +
             '<td class="col-name step-indent">' + caret + (i + 1) + ". " + esc(stepLabel(run, sr)) + noteHtml(sr) + transcriptHtml(sr) + "</td>" +
+            '<td class="col-cost">' + esc(fmtCost(stepCost(sr))) + "</td>" +
             '<td class="col-time">' + esc(stepRuntime(sr)) + "</td>" +
             "</tr>"
           );
@@ -357,14 +390,16 @@
           return (
             '<tr class="io-row" data-io="' + esc(k) + '">' +
             '<td class="col-status"></td>' +
+            '<td class="col-job"></td>' +
             '<td class="col-name io-key-indent">' + caret + "<code>" + esc(key) + "</code>" + type + sourceBadge(io) + descHtml(io) + "</td>" +
+            '<td class="col-cost"></td>' +
             '<td class="col-time"></td>' +
             "</tr>"
           );
         }
 
         function valueRow(value) {
-          return '<tr class="io-value-row"><td colspan="3" class="io-value-indent"><pre class="io-value">' + esc(formatValue(value)) + "</pre></td></tr>";
+          return '<tr class="io-value-row"><td colspan="5" class="io-value-indent"><pre class="io-value">' + esc(formatValue(value)) + "</pre></td></tr>";
         }
 
         function formatValue(value) {
@@ -382,11 +417,11 @@
         }
 
         function sectionRow(label) {
-          return '<tr class="io-section-row"><td class="col-status"></td><td class="col-name io-section-indent"><strong>' + esc(label) + '</strong></td><td class="col-time"></td></tr>';
+          return '<tr class="io-section-row"><td class="col-status"></td><td class="col-job"></td><td class="col-name io-section-indent"><strong>' + esc(label) + '</strong></td><td class="col-cost"></td><td class="col-time"></td></tr>';
         }
 
         function catRow(label) {
-          return '<tr class="io-cat-row"><td class="col-status"></td><td class="col-name io-cat-indent">' + esc(label) + '</td><td class="col-time"></td></tr>';
+          return '<tr class="io-cat-row"><td class="col-status"></td><td class="col-job"></td><td class="col-name io-cat-indent">' + esc(label) + '</td><td class="col-cost"></td><td class="col-time"></td></tr>';
         }
 
         // feedsFailure outputs bucket under "Relayed on failure" regardless of
@@ -408,13 +443,20 @@
           return runRow(run, open) + run.stepRuns.map((sr, i) => stepRows(run, sr, i)).join("");
         }
 
+        function spendLine() {
+          const total = runs.reduce((sum, run) => sum + runCost(run), 0);
+          if (total <= 0) return "";
+          return '<p class="text-muted small spend-line">Total LLM spend: <strong>' + esc("$" + total.toFixed(4)) + "</strong> across " + runs.length + " run(s)</p>";
+        }
+
         function render() {
           if (!runs.length) {
             container.innerHTML = '<p class="text-muted">No runs yet.</p>';
             return;
           }
-          const head = '<thead><tr><th class="col-status">Status</th><th>Name</th><th class="col-time">Runtime</th></tr></thead>';
+          const head = '<thead><tr><th class="col-status">Status</th><th class="col-job">Job</th><th>Name</th><th class="col-cost">Cost</th><th class="col-time">Runtime</th></tr></thead>';
           container.innerHTML =
+            spendLine() +
             '<table class="table table-hover runs-table">' + head + "<tbody>" + runs.map(runRows).join("") + "</tbody></table>";
         }
 
@@ -424,9 +466,27 @@
           render();
         }
 
+        async function retry(id) {
+          try {
+            const res = await fetch("/api/runs/retry?id=" + encodeURIComponent(id), { method: "POST" });
+            const body = await res.json();
+            if (!res.ok) throw new Error(body.error || ("HTTP " + res.status));
+            await refresh(); // the retried trigger shows up as a NEW run once the poller ticks
+          } catch (err) {
+            console.error("[dashboard.retry]", err);
+            window.alert("Retry failed: " + err.message);
+          }
+        }
+
         // Most-specific row first: an io/step/run row is its own <tr>, so the
         // deepest open level toggles without disturbing its ancestors.
         function toggle(ev) {
+          const retryLink = ev.target.closest("[data-retry-run]");
+          if (retryLink) {
+            ev.preventDefault();
+            void retry(retryLink.getAttribute("data-retry-run"));
+            return;
+          }
           if (ev.target.closest("a")) return; // let links (e.g. transcript) act, not toggle the row
           const io = ev.target.closest(".io-row");
           if (io) return flip(openIos, io.getAttribute("data-io"));
