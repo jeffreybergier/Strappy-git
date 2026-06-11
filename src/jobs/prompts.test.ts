@@ -39,6 +39,10 @@ test("loadGuidance reads every step's section of guidance.json", () => {
   assert.equal(typeof loadGuidance("code-review")["reviewComment"], "string");
 });
 
+test("loadGuidance reads the shared submit-nudge reminder with its {toolName} placeholder", () => {
+  assert.match(loadGuidance("submit-nudge")["reminder"] ?? "", /\{toolName\}/);
+});
+
 test("loadGuidanceKey returns one guidance string and throws on a missing key", () => {
   assert.match(loadGuidanceKey("code-review", "reviewComment"), /code review/i);
   assert.throws(() => loadGuidanceKey("code-review", "noSuchKey"), /missing "code-review.noSuchKey"/);

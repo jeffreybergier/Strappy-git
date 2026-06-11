@@ -97,14 +97,22 @@ test("reviewBody trims the comment and rejects an empty one", () => {
 
 test("updateBody wraps the summary in a pushed-update heading over the same spend footer", () => {
   assert.equal(
-    updateBody("Squashed that edge case. 💅", usage),
+    updateBody("Squashed that edge case. 💅", true, usage),
     "**🔧 Strappy pushed an update**\n\nSquashed that edge case. 💅\n\n---\n🤖 Strappy · meta-llama/llama-3.3-70b-instruct\nLLM cost: $0.0234 · 12,304 in / 1,872 out tokens",
   );
 });
 
-test("updateBody trims the summary and rejects an empty one", () => {
-  assert.match(updateBody("  done  ", usage), /\*\*🔧 Strappy pushed an update\*\*\n\ndone\n\n---/);
-  assert.throws(() => updateBody("   ", usage), /summary is required/);
+test("updateBody switches to the no-changes heading when nothing was pushed", () => {
+  assert.match(
+    updateBody("Already correct, hon — nothing to fix.", false, usage),
+    /^\*\*💬 Strappy replied \(no changes pushed\)\*\*\n\nAlready correct, hon — nothing to fix\.\n\n---/,
+  );
+});
+
+test("updateBody trims the summary and rejects an empty one or a non-boolean pushed", () => {
+  assert.match(updateBody("  done  ", true, usage), /\*\*🔧 Strappy pushed an update\*\*\n\ndone\n\n---/);
+  assert.throws(() => updateBody("   ", true, usage), /summary is required/);
+  assert.throws(() => updateBody("done", "yes" as never, usage), /pushed must be a boolean/);
 });
 
 // ---- promptCheckComment (the verdict posted on the issue, pass or fail) ------

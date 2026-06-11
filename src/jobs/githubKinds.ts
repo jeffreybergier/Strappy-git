@@ -1,10 +1,13 @@
 import path from "node:path";
+import { createLogger } from "../logger.js";
 import { StepKindRegistry } from "./stepKinds.js";
 import type { StepContext, StepValues } from "./stepKinds.js";
 import { llmStepKind, llmDerivableKeys } from "./llmKind.js";
 import { securityStepKind } from "./securityKind.js";
 import type { GitHubClient, IssueComment } from "../github/client.js";
 import * as git from "../github/git.js";
+
+const log = createLogger("GitHubKinds");
 
 export interface GitHubKindDeps {
   client: GitHubClient;
@@ -121,9 +124,17 @@ export function branchName(issueNumber: number, jobUuid: string): string {
   return `strappy/issue-${issueNumber}/${git.uuidStem(jobUuid)}`;
 }
 
+// A clean tree is a sanctioned outcome, not a failure: the update model may
+// decide the feedback needs no edit (it verified the code or only answered a
+// question). Commit and push are skipped and pushed: false selects the
+// no-changes reply heading downstream.
 async function commitPush(deps: GitHubKindDeps, ctx: StepContext): Promise<StepValues> {
   const workingDirectory = str(ctx.inputs, "workingDirectory");
   const newBranch = str(ctx.inputs, "newBranch");
+  if (!(await git.hasChanges(workingDirectory))) {
+    log.info("commitPush", `working tree is clean; skipping commit and push of ${newBranch}`);
+    return { pushed: false };
+  }
   await git.commitAll(workingDirectory, str(ctx.inputs, "commitMessage"), deps.committer);
   await git.pushBranch(workingDirectory, newBranch, deps.token);
   return { pushed: true };
@@ -178,11 +189,14 @@ export function reviewBody(comment: string, usage: PrUsage): string {
   return `**🔍 Strappy code review**\n\n${comment.trim()}\n\n${usageFooter(usage)}`;
 }
 
-// The implement model's own account of the update it just pushed, posted as the
-// PR reply that closes the loop on a comment-triggered run; same spend footer.
-export function updateBody(summary: string, usage: PrUsage): string {
+// The implement model's own account of the update, posted as the PR reply that
+// closes the loop on a comment-triggered run; same spend footer. pushed selects
+// the heading: an update was pushed, or the model replied without changing code.
+export function updateBody(summary: string, pushed: boolean, usage: PrUsage): string {
   if (typeof summary !== "string" || summary.trim() === "") throw new Error("[githubKinds.updateBody] summary is required");
-  return `**🔧 Strappy pushed an update**\n\n${summary.trim()}\n\n${usageFooter(usage)}`;
+  if (typeof pushed !== "boolean") throw new Error("[githubKinds.updateBody] pushed must be a boolean");
+  const heading = pushed ? "🔧 Strappy pushed an update" : "💬 Strappy replied (no changes pushed)";
+  return `**${heading}**\n\n${summary.trim()}\n\n${usageFooter(usage)}`;
 }
 
 // The prompt-check verdict comment: a bold "Prompt Check Passed/Failed" heading
@@ -261,7 +275,7 @@ async function commentUpdate(deps: GitHubKindDeps, ctx: StepContext): Promise<St
   const commentId = await deps.client.commentOnIssue(
     str(ctx.inputs, "repo"),
     num(ctx.inputs, "prNumber"),
-    updateBody(str(ctx.inputs, "updateSummary"), {
+    updateBody(str(ctx.inputs, "updateSummary"), bool(ctx.inputs, "pushed"), {
       model: str(ctx.inputs, "model"),
       cost: num(ctx.inputs, "cost"),
       inputTokens: num(ctx.inputs, "inputTokens"),
@@ -279,6 +293,12 @@ async function closeIssue(deps: GitHubKindDeps, ctx: StepContext): Promise<StepV
 function str(inputs: StepValues, key: string): string {
   const v = inputs[key];
   if (typeof v !== "string" || v === "") throw new Error(`[githubKinds] expected non-empty string input "${key}"`);
+  return v;
+}
+
+function bool(inputs: StepValues, key: string): boolean {
+  const v = inputs[key];
+  if (typeof v !== "boolean") throw new Error(`[githubKinds] expected boolean input "${key}"`);
   return v;
 }
 

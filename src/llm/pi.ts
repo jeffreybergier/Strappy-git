@@ -20,7 +20,7 @@ import type { TObject } from "typebox";
 import { config, requireOpenRouterKey } from "../config.js";
 import { createLogger } from "../logger.js";
 import type { LlmExecution, TokenUsage, ToolCallRecord } from "../jobs/types.js";
-import { loadPrompt } from "../jobs/prompts.js";
+import { loadGuidanceKey, loadPrompt } from "../jobs/prompts.js";
 
 // A step's structured result: the validated tool arguments (the step's typed
 // outputs) plus the full execution record for persistence.
@@ -155,7 +155,16 @@ export async function runStructured(
     execution = await collect(session, prompt);
     logExecution(execution);
     if (values === undefined) {
-      throw new StructuredRunError(`[PiClient.runStructured] model did not call ${toolName}`, execution);
+      // One-shot recovery: the model usually has its full answer drafted in the
+      // session already, so a single reminder on the SAME session (context and
+      // submit tool intact) recovers the step for one more turn's cost.
+      log.warn("runStructured", `model did not call ${toolName}; sending one reminder`);
+      const nudged = await collect(session, nudgePrompt(toolName));
+      logExecution(nudged);
+      execution = mergeExecutions(execution, nudged);
+    }
+    if (values === undefined) {
+      throw new StructuredRunError(`[PiClient.runStructured] model did not call ${toolName} (even after a reminder)`, execution);
     }
     logValues(values);
     return { values, execution };
@@ -177,6 +186,23 @@ export async function runStructured(
       discardTempSession(sm);
     }
   }
+}
+
+// The reminder sent when a turn ends without the submit tool being called. The
+// text lives in prompts/guidance.json ("submit-nudge.reminder", with {toolName}
+// interpolated) like every other model-facing string. It is imperative on
+// purpose: in this failure mode the model believes it is done (it wrote its
+// answer as plain text), so a question ("are you done?") just invites more
+// plain text.
+export function nudgePrompt(toolName: string): string {
+  if (typeof toolName !== "string" || toolName.trim() === "") {
+    throw new Error("[PiClient.nudgePrompt] toolName must be a non-empty string");
+  }
+  const template = loadGuidanceKey("submit-nudge", "reminder");
+  if (!template.includes("{toolName}")) {
+    throw new Error('[PiClient.nudgePrompt] guidance "submit-nudge.reminder" must contain {toolName}');
+  }
+  return template.replaceAll("{toolName}", toolName);
 }
 
 // The submit tool captures the step's typed outputs and ends the agent loop on
@@ -477,6 +503,34 @@ export function summarizeExecution(messages: AgentMessage[]): LlmExecution {
     toolCalls: collectToolCalls(assistants),
     usage: sumUsage(assistants),
   };
+}
+
+// Folds the original turn and the nudge turn into one record: the persisted
+// execution must carry BOTH turns' spend and tool calls (the comment footers and
+// dashboard report real cost). agent_end delivers only that run's new messages
+// (verified against pi's agent loop), so summing here never double-counts. The
+// last turn wins provider/model/stopReason, matching summarizeExecution.
+export function mergeExecutions(first: LlmExecution, second: LlmExecution): LlmExecution {
+  if (!first || !second) throw new Error("[PiClient.mergeExecutions] two executions are required");
+  const thinking = joinTurns(first.thinking, second.thinking);
+  return {
+    provider: second.provider,
+    model: second.model,
+    stopReason: second.stopReason,
+    text: joinTurns(first.text, second.text),
+    ...(thinking !== "" && { thinking }),
+    toolCalls: [...first.toolCalls, ...second.toolCalls],
+    usage: {
+      inputTokens: first.usage.inputTokens + second.usage.inputTokens,
+      outputTokens: first.usage.outputTokens + second.usage.outputTokens,
+      totalTokens: first.usage.totalTokens + second.usage.totalTokens,
+      costTotal: first.usage.costTotal + second.usage.costTotal,
+    },
+  };
+}
+
+function joinTurns(a?: string, b?: string): string {
+  return [a, b].filter((part) => part !== undefined && part.trim() !== "").join("\n");
 }
 
 type ContentBlock = AssistantMessage["content"][number];

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
-import { summarizeExecution, createStreamPrinter, logExecution, logValues, transcriptSlug } from "./pi.js";
+import { summarizeExecution, mergeExecutions, nudgePrompt, createStreamPrinter, logExecution, logValues, transcriptSlug } from "./pi.js";
 import type { LlmExecution } from "../jobs/types.js";
 
 // Synthetic session events for the stream printer; cast past the SDK's event union.
@@ -189,4 +189,47 @@ test("summarizeExecution omits thinking when the model produced none", () => {
 test("summarizeExecution throws when there is no assistant message", () => {
   assert.throws(() => summarizeExecution([]), /no assistant message/);
   assert.throws(() => summarizeExecution(undefined as never), /must be an array/);
+});
+
+test("nudgePrompt names the tool, is imperative, and rejects a blank tool name", () => {
+  const prompt = nudgePrompt("submit_review");
+  assert.match(prompt, /`submit_review`/);
+  assert.match(prompt, /Call `submit_review` now/);
+  assert.doesNotMatch(prompt, /\?/); // no question for the model to answer with more plain text
+  assert.throws(() => nudgePrompt("  "), /toolName must be a non-empty string/);
+});
+
+test("mergeExecutions sums usage, concatenates tool calls, and keeps the last turn's identity", () => {
+  const first = exec({
+    text: "Here's my verdict: approve.",
+    stopReason: "stop",
+    toolCalls: [{ id: "c1", name: "bash", arguments: { command: "git diff" } }],
+    usage: { inputTokens: 100, outputTokens: 40, totalTokens: 140, costTotal: 0.01 },
+  });
+  const second = exec({
+    text: "Submitting now.",
+    stopReason: "toolUse",
+    toolCalls: [{ id: "c2", name: "submit_review", arguments: { approve: true } }],
+    usage: { inputTokens: 150, outputTokens: 10, totalTokens: 160, costTotal: 0.004 },
+  });
+  const merged = mergeExecutions(first, second);
+  assert.equal(merged.text, "Here's my verdict: approve.\nSubmitting now.");
+  assert.equal(merged.stopReason, "toolUse");
+  assert.deepEqual(merged.toolCalls.map((c) => c.id), ["c1", "c2"]);
+  assert.deepEqual(merged.usage, { inputTokens: 250, outputTokens: 50, totalTokens: 300, costTotal: 0.014 });
+});
+
+test("mergeExecutions joins thinking across turns and omits it when neither turn thought", () => {
+  const thought = mergeExecutions(exec({ thinking: "first pass" }), exec({}));
+  assert.equal(thought.thinking, "first pass");
+  const silent = mergeExecutions(exec({}), exec({}));
+  assert.equal("thinking" in silent, false);
+});
+
+test("mergeExecutions skips an empty first text instead of leading with a newline", () => {
+  assert.equal(mergeExecutions(exec({ text: "" }), exec({ text: "done" })).text, "done");
+});
+
+test("mergeExecutions rejects a missing execution", () => {
+  assert.throws(() => mergeExecutions(undefined as never, exec({})), /two executions are required/);
 });

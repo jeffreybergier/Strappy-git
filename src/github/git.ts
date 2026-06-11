@@ -109,6 +109,15 @@ export async function createBranch(workdir: string, branch: string): Promise<voi
   log.info("createBranch", `created ${branch}`);
 }
 
+// True when the working tree differs from HEAD (staged, unstaged, or untracked).
+// The commit/push step keys off this: a clean tree after the update model ran
+// means it decided no changes were needed, which is a sanctioned outcome.
+export async function hasChanges(workdir: string): Promise<boolean> {
+  if (typeof workdir !== "string" || workdir === "") throw new Error("[Git.hasChanges] workdir is required");
+  const status = await runGit(["-C", workdir, "status", "--porcelain"]);
+  return status !== "";
+}
+
 export async function commitAll(workdir: string, message: string, identity: CommitIdentity): Promise<void> {
   await runGit(["-C", workdir, "add", "-A"]);
   await runGit([

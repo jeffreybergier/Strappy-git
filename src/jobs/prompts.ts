@@ -20,7 +20,8 @@ export function loadPrompt(name: string): string {
 
 // Every model-facing guidance string lives in ONE file, prompts/guidance.json:
 // a section per step (named after the step's .md prompt), each a flat map of
-// non-empty strings keyed by output field.
+// non-empty strings keyed by output field — plus the shared "submit-nudge"
+// section the LLM seam sends when a model forgets to call its submit tool.
 const GUIDANCE_FILE = path.join(PROMPTS_DIR, "guidance.json");
 
 // Reads one section out of prompts/guidance.json. Same fail-loudly contract as

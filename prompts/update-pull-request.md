@@ -15,6 +15,11 @@ be precise and only emit what is asked for.
   so far (origin/HEAD tracks the base branch).
 - Edit the files to address the feedback. Do NOT create a branch and do NOT
   commit or push — the harness commits and pushes your edits for you.
+- Making no changes is a supported outcome: if the feedback needs no edit
+  (you verified the code is already correct, or the comment only needs an
+  answer), leave the working tree untouched and say so in your update summary.
+  The harness detects the clean tree, skips the commit and push, and posts
+  your summary as the reply.
 - Comments from Strappy (your own earlier replies and reviews) are context,
   not new instructions.
 

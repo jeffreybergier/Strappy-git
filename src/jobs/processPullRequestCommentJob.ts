@@ -60,8 +60,10 @@ function step(
 // a public repo can carry comments from anyone), post the verdict, clone, check
 // the PR head branch out, run the implement LLM to address the feedback, then
 // commit and push onto the SAME branch and post the model's own summary of what
-// it changed back on the PR. Nothing opens or closes here — the PR already
-// exists. Each step reads only ambient trigger constants, its own static
+// it changed back on the PR. The model changing nothing is a supported outcome
+// (it verified the code, or the feedback only needed an answer): commit/push
+// no-op and the summary still posts, under a no-changes heading. Nothing opens
+// or closes here — the PR already exists. Each step reads only ambient trigger constants, its own static
 // prompt, or the immediately preceding step's outputs; carried values are
 // explicit "pass" pairs exactly as in the other jobs.
 export function processPullRequestCommentJob(): Job {
@@ -132,7 +134,7 @@ export function processPullRequestCommentJob(): Job {
           io("newBranch", "string", "pass", "Carried to the commit/push step")],
         loadPrompt("update-pull-request")),
       step("commit-push", "git.commitPush", "Commit & Push",
-        "Commit the model's changes with its commit message and push them onto the PR's existing head branch.",
+        "Commit the model's changes with its commit message and push them onto the PR's existing head branch; no-ops (pushed: false) when the model decided no changes were needed.",
         [io("workingDirectory", "string", "step", "Local clone path"),
           io("newBranch", "string", "step", "The PR head branch to push (fast-forward onto the open PR)"),
           io("commitMessage", "string", "step", "Commit message from the update step"),
@@ -141,16 +143,17 @@ export function processPullRequestCommentJob(): Job {
           io("model", "string", "pass", "Carried to the comment step (comment footer)"),
           io("inputTokens", "integer", "pass", "Carried to the comment step (comment footer)"),
           io("outputTokens", "integer", "pass", "Carried to the comment step (comment footer)")],
-        [io("pushed", "boolean", "receipt", "Terminal: the branch was pushed"),
+        [io("pushed", "boolean", "step", "True when changes were committed and pushed; false when the model made none — the reply step keys its heading off this"),
           io("updateSummary", "string", "pass", "Carried to the comment step"),
           io("cost", "number", "pass", "Carried to the comment step (comment footer)"),
           io("model", "string", "pass", "Carried to the comment step (comment footer)"),
           io("inputTokens", "integer", "pass", "Carried to the comment step (comment footer)"),
           io("outputTokens", "integer", "pass", "Carried to the comment step (comment footer)")]),
       step("comment-update", "github.commentUpdate", "Comment Update on PR",
-        "Post the model's summary of the pushed update (with a spend footer) as a reply on the pull request.",
+        "Post the model's summary (with a spend footer) as a reply on the pull request — headed as a pushed update, or as a no-changes reply when nothing was pushed.",
         [io("repo", "string", "trigger", "owner/name"),
           io("prNumber", "number", "trigger", "PR to reply on"),
+          io("pushed", "boolean", "step", "Whether an update was actually pushed; selects the reply heading"),
           io("updateSummary", "string", "step", "Update summary from the update step"),
           io("cost", "number", "step", "LLM spend, rendered into the comment footer"),
           io("model", "string", "step", "Model id, rendered into the comment footer"),

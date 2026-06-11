@@ -44,6 +44,16 @@ test("processPullRequestCommentJob persists to SQLite and records its run", asyn
   assert.deepEqual(store.listRuns().find((r) => r.id === "run-pr-reply"), run);
 });
 
+test("processPullRequestCommentJob threads the pushed flag from commit-push into the reply step", () => {
+  const job = processPullRequestCommentJob();
+  const push = job.steps.find((s) => s.id === "commit-push");
+  assert.equal(push?.outputs.find((io) => io.key === "pushed")?.source, "step", "pushed is consumable, not a terminal receipt");
+  const reply = job.steps.find((s) => s.id === "comment-update");
+  const input = reply?.inputs.find((io) => io.key === "pushed");
+  assert.equal(input?.source, "step");
+  assert.equal(input?.type, "boolean");
+});
+
 test("processPullRequestCommentJob addresses its failure handler by prNumber", () => {
   const handler = processPullRequestCommentJob().failureHandler;
   const byKey = Object.fromEntries(handler.inputs.map((io) => [io.key, io]));
