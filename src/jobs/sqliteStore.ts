@@ -16,14 +16,18 @@ import {
 import type { JobReadStore, JobWriteStore, TriggerAdmin, TriggerLedger } from "./store.js";
 import type { Job, JobRun } from "./types.js";
 
+export type RunRecordedListener = (run: JobRun) => void;
+
 // JobReadStore backed by SQLite. Reads hydrate full Job/JobRun trees; the
 // write methods are the persistence seam for the scheduler.
 export class SqliteJobStore implements JobReadStore, JobWriteStore, TriggerLedger, TriggerAdmin {
   private readonly db: DatabaseSync;
+  private readonly onRunRecorded?: RunRecordedListener;
 
-  constructor(db: DatabaseSync) {
+  constructor(db: DatabaseSync, onRunRecorded?: RunRecordedListener) {
     if (!(db instanceof DatabaseSync)) throw new Error("[SqliteJobStore.constructor] db is required");
     this.db = db;
+    this.onRunRecorded = onRunRecorded;
   }
 
   listJobs(): Job[] {
@@ -47,6 +51,7 @@ export class SqliteJobStore implements JobReadStore, JobWriteStore, TriggerLedge
   recordRun(run: JobRun): void {
     if (!run) throw new Error("[SqliteJobStore.recordRun] run is required");
     upsertRun(this.db, run);
+    this.onRunRecorded?.(run);
   }
 
   isProcessed(repo: string, issueNumber: number): boolean {

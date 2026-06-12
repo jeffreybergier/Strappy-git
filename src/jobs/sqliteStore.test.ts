@@ -85,6 +85,23 @@ test("listRuns preserves step runs, statuses and optional notes", () => {
   assert.equal(runs[0]?.stepRuns.find((s) => s.stepId === "b")?.note, "OpenRouter rate limit");
 });
 
+test("recordRun notifies after persisting a run", () => {
+  const db = openDatabase(":memory:");
+  const seen: JobRun[] = [];
+  const store = new SqliteJobStore(db, (run) => seen.push(run));
+  store.saveJob(bareJob());
+  const run: JobRun = {
+    id: "run-notify",
+    jobId: "j",
+    status: "running",
+    startedAt: "2026-06-06T00:00:00.000Z",
+    stepRuns: [],
+  };
+  store.recordRun(run);
+  assert.deepEqual(store.listRuns(), [run]);
+  assert.deepEqual(seen, [run]);
+});
+
 test("recordRun persists and round-trips a full LLM execution on a step run", () => {
   const db = openDatabase(":memory:");
   const store = new SqliteJobStore(db);

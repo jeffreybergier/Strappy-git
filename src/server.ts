@@ -20,17 +20,19 @@ import { reconcileInterruptedRuns } from "./github/recovery.js";
 import { processIssueJob } from "./jobs/processIssueJob.js";
 import { processPullRequestJob } from "./jobs/processPullRequestJob.js";
 import { processPullRequestCommentJob } from "./jobs/processPullRequestCommentJob.js";
+import type { JobRun } from "./jobs/types.js";
+import { RunEventHub } from "./routes/runEvents.js";
 
 const log = createLogger("Server");
 
-function openStore(): SqliteJobStore {
+function openStore(onRunRecorded?: (run: JobRun) => void): SqliteJobStore {
   const db = openDatabase(config.dbPath);
   seedDatabase(db, seedJobs(), seedRuns());
   syncJobs(db, seedJobs()); // keep persisted job definitions in step with the code
-  return new SqliteJobStore(db);
+  return new SqliteJobStore(db, onRunRecorded);
 }
 
-function createApp(store: JobReadStore, retry: RetryDeps): express.Express {
+function createApp(store: JobReadStore, retry: RetryDeps, runEvents: RunEventHub): express.Express {
   const app = express();
   app.set("view engine", "ejs");
   app.set("views", path.resolve(process.cwd(), "views"));
@@ -38,7 +40,7 @@ function createApp(store: JobReadStore, retry: RetryDeps): express.Express {
   // (data/sessions/<run>-<step>.html) resolves to a clickable /sessions/ link.
   app.use("/sessions", express.static(sessionsDir()));
   app.use("/", dashboardRouter(store));
-  app.use("/api", apiRouter(store, retry));
+  app.use("/api", apiRouter(store, retry, runEvents));
   return app;
 }
 
@@ -96,7 +98,7 @@ function startPoller(store: SqliteJobStore, client: GitHubClient | null, token: 
 // job up to shutdownTimeoutMs to drain, then close the DB and exit. A second
 // signal skips the wait. A run abandoned by the timeout is reconciled (marked
 // "interrupted", reported on its thread) on the next boot.
-function registerShutdown(server: Server, poller: TriggerPoller | null, store: SqliteJobStore): void {
+function registerShutdown(server: Server, poller: TriggerPoller | null, store: SqliteJobStore, runEvents: RunEventHub): void {
   let draining = false;
   const shutdown = (signal: string): void => {
     if (draining) {
@@ -105,15 +107,16 @@ function registerShutdown(server: Server, poller: TriggerPoller | null, store: S
     }
     draining = true;
     log.info("shutdown", `${signal} received — draining (up to ${config.shutdownTimeoutMs}ms)`);
-    void drain(server, poller, store);
+    void drain(server, poller, store, runEvents);
   };
   process.on("SIGTERM", () => shutdown("SIGTERM"));
   process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
-async function drain(server: Server, poller: TriggerPoller | null, store: SqliteJobStore): Promise<void> {
+async function drain(server: Server, poller: TriggerPoller | null, store: SqliteJobStore, runEvents: RunEventHub): Promise<void> {
   try {
     poller?.stop();
+    runEvents.close();
     server.close();
     if (poller !== null) await Promise.race([poller.whenIdle(), delay(config.shutdownTimeoutMs)]);
     store.close();
@@ -130,19 +133,20 @@ function delay(ms: number): Promise<void> {
 }
 
 async function start(): Promise<void> {
-  const store = openStore();
+  const runEvents = new RunEventHub();
+  const store = openStore((run) => runEvents.publishRun(run));
   const token = gitHubToken();
   const client = token === undefined ? null : createGitHubClient(token);
   // Before the poller starts: terminal-mark any run a previous process abandoned
   // mid-flight and report it on its thread, so nothing stays "running" forever.
   await reconcileInterruptedRuns({ store, ...(client !== null && { client }) });
-  const app = createApp(store, { admin: store, ...(client !== null && { client }) });
+  const app = createApp(store, { admin: store, ...(client !== null && { client }) }, runEvents);
   warnIfNoKey();
   const poller = startPoller(store, client, token);
   const server = app.listen(config.port, config.host, () => {
     log.info("start", `dashboard listening on ${config.host}:${config.port} (browse http://localhost:${config.port})`);
   });
-  registerShutdown(server, poller, store);
+  registerShutdown(server, poller, store, runEvents);
 }
 
 start().catch((error: unknown) => {

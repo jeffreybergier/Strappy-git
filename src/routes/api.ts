@@ -3,6 +3,7 @@ import { createLogger } from "../logger.js";
 import type { JobReadStore, TriggerAdmin } from "../jobs/store.js";
 import type { GitHubClient } from "../github/client.js";
 import type { JobRun } from "../jobs/types.js";
+import type { RunEventStream } from "./runEvents.js";
 
 const log = createLogger("Api");
 
@@ -68,12 +69,15 @@ async function maybeReopen(store: JobReadStore, deps: RetryDeps, run: JobRun, re
 
 // retry is wired only when a TriggerAdmin-capable store backs the server (the
 // SQLite store); without it the endpoint reports itself unavailable.
-export function apiRouter(store: JobReadStore, retry?: RetryDeps): Router {
+export function apiRouter(store: JobReadStore, retry?: RetryDeps, events?: RunEventStream): Router {
   if (!store) throw new Error("[apiRouter] store is required");
   const router = Router();
   router.get("/jobs", (_req, res) => {
     res.json(store.listJobs());
   });
+  if (events !== undefined) {
+    router.get("/runs/events", (req, res) => events.subscribe(req, res));
+  }
   router.get("/runs", (_req, res) => {
     res.json(store.listRuns());
   });

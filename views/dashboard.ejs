@@ -227,6 +227,10 @@
         let jobsIndex = {};
         let runs = [];
         let renderedSignature = "";
+        let fallbackPoll = null;
+        let refreshInFlight = false;
+        let refreshQueued = false;
+        let runEvents = null;
 
         function badge(status) {
           return RUN_BADGE[status] || "default";
@@ -611,6 +615,45 @@
           }
         }
 
+        function requestRefresh() {
+          if (refreshInFlight) {
+            refreshQueued = true;
+            return;
+          }
+          refreshInFlight = true;
+          refresh().finally(() => {
+            refreshInFlight = false;
+            if (!refreshQueued) return;
+            refreshQueued = false;
+            requestRefresh();
+          });
+        }
+
+        function connectRunEvents() {
+          if (!window.EventSource) {
+            startFallbackPolling();
+            return;
+          }
+          runEvents = new EventSource("/api/runs/events");
+          runEvents.addEventListener("open", () => {
+            stopFallbackPolling();
+            requestRefresh();
+          });
+          runEvents.addEventListener("runs", requestRefresh);
+          runEvents.addEventListener("error", startFallbackPolling);
+        }
+
+        function startFallbackPolling() {
+          if (fallbackPoll !== null) return;
+          fallbackPoll = setInterval(requestRefresh, POLL_MS);
+        }
+
+        function stopFallbackPolling() {
+          if (fallbackPoll === null) return;
+          clearInterval(fallbackPoll);
+          fallbackPoll = null;
+        }
+
         async function init() {
           try {
             jobsIndex = indexJobs(await fetchJson("/api/jobs"));
@@ -618,8 +661,8 @@
             console.error("[dashboard.init]", err);
           }
           container.addEventListener("click", toggle);
+          connectRunEvents();
           await refresh();
-          setInterval(refresh, POLL_MS);
           setInterval(updateDynamicCells, TICK_MS);
         }
 
