@@ -6,7 +6,7 @@ services:
     environment:
       - IS_SANDBOX=1
     volumes:
-      - ~/.strappy:/root
+      - ~/.altivec:/root
       - .:/repo/strappy-git
     working_dir: /repo/strappy-git
     entrypoint: /bin/bash
